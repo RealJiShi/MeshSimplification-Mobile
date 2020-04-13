@@ -213,7 +213,7 @@ public:
     }
 
     // priority = cost / (normal * tri_quality)
-    static double computePriority(const Vec3 &optPos, const SymetricMatrix &Q,
+    static double computePriority(const Vec3 &optPos, const SymetricMatrix &Q, const double &QuadricCost,
                                   Vertex *start, Vertex *end)
     {
         // replace the position with optPos
@@ -261,7 +261,7 @@ public:
         minQual = std::min(minQual, 1.0);
 
         // cost
-        double cost = ScaleFactor * getQuadricCost(optPos, Q);
+        double cost = ScaleFactor * QuadricCost;
         if (cost <= QUADRIC_EPSILON)
         {
             cost = -1 / (start_old - end_old).length();
@@ -274,7 +274,7 @@ public:
         return cost;
     }
 
-    static Vec3 calcOptimalPosition(const SymetricMatrix &Q, Vertex *start, Vertex *end)
+    static Vec3 calcOptimalPosition(const SymetricMatrix &Q, Vertex *start, Vertex *end, double &cost)
     {
         static const double COST_THRESHOLD = 200.0 * QUADRIC_EPSILON;
         Vec3 optPos = (start->Pos + end->Pos) / 2.0;
@@ -285,13 +285,15 @@ public:
                 // calculate the cost
                 const Vec3 &v0 = start->Pos;
                 const Vec3 &v1 = end->Pos;
-                const Vec3 &mid = (v0 + v1) / 2.0;
+                // const Vec3 &mid = (v0 + v1) / 2.0;
+                const Vec3 &mid = optPos;
 
                 double cost0 = getQuadricCost(v0, Q);
                 double cost1 = getQuadricCost(v1, Q);
                 double costm = getQuadricCost(mid, Q);
 
                 double min = std::min(cost0, std::min(cost1, costm));
+                cost = min;
                 if (min == cost0)
                 {
                     optPos = v0;
@@ -305,6 +307,10 @@ public:
                     optPos = mid;
                 }
             }
+            else
+            {
+                cost = getQuadricCost(optPos, Q);
+            }
         }
         return optPos;
     }
@@ -317,8 +323,8 @@ public:
             Vertex *start = face.Vertices[j];
             Vertex *end = face.Vertices[(j + 1) % 3];
             SymetricMatrix Q = start->Q + end->Q;
-            Vec3 pos = calcOptimalPosition(Q, start, end);
-            double cost = getQuadricCost(pos, Q);
+            double cost = 0.0;
+            Vec3 pos = calcOptimalPosition(Q, start, end, cost);
             if (cost < min)
             {
                 face.OptPos = pos;
@@ -332,8 +338,9 @@ public:
     static void solve(Edge &edge)
     {
         SymetricMatrix Q = edge.Start->Q + edge.End->Q;
-        edge.OptPos = calcOptimalPosition(Q, edge.Start, edge.End);
-        edge.Priority = computePriority(edge.OptPos, Q, edge.Start, edge.End);
+        double cost = 0.0;
+        edge.OptPos = calcOptimalPosition(Q, edge.Start, edge.End, cost);
+        edge.Priority = computePriority(edge.OptPos, Q, cost, edge.Start, edge.End);
     }
 
     static bool flipped(Vertex *start, Vertex *end, const Vec3 &optPos)
