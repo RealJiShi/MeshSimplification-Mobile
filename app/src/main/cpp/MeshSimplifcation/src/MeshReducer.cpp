@@ -693,7 +693,6 @@ void MeshReducerPrivate::load(const double *vertices, const uint16_t *indices, u
 
 void MeshReducerPrivate::store(std::vector<double> &vertices, std::vector<uint16_t> &indices)
 {
-    std::vector<unsigned int> idx_rec(Vertices.size(), 0);
     unsigned int i_valid = 0;
     for (unsigned int i = 0; i < Vertices.size(); ++i)
     {
@@ -703,8 +702,7 @@ void MeshReducerPrivate::store(std::vector<double> &vertices, std::vector<uint16
             continue;
         }
 
-        idx_rec[i] = i_valid;
-        i_valid++;
+        vert.LOCAL_MARK = i_valid++;
         vertices.push_back(vert.Pos.X);
         vertices.push_back(vert.Pos.Y);
         vertices.push_back(vert.Pos.Z);
@@ -720,7 +718,7 @@ void MeshReducerPrivate::store(std::vector<double> &vertices, std::vector<uint16
 
         for (auto &vert : face.Vertices)
         {
-            indices.push_back(idx_rec[vert->ID]);
+            indices.push_back((unsigned short)vert->LOCAL_MARK);
         }
     }
 }
@@ -917,7 +915,8 @@ unsigned int MeshReducerPrivate::removeDuplicateVertex()
     {
         if (!vert.Removed)
         {
-            pVec[i_valid++] = &vert;
+            pVec[i_valid] = &vert;
+            i_valid++;
         }
     }
     pVec.resize(i_valid);
@@ -926,16 +925,18 @@ unsigned int MeshReducerPrivate::removeDuplicateVertex()
     std::sort(pVec.begin(), pVec.end(), cmp);
 
     unsigned int j = 0;
-    unsigned int i = j;
+    unsigned int i = 1;
     unsigned int nDeleted = 0;
-    std::map<Vertex *, Vertex *> mp;
-    mp[pVec[i]] = pVec[j];
-    i++;
+    unsigned int INVALID_MARK = Vertices.size();
+    for (auto &vert : pVec)
+    {
+        vert->LOCAL_MARK = vert->ID;
+    }
     for (; i != i_valid;)
     {
         if (!pVec[i]->Removed && !pVec[j]->Removed && pVec[i]->Pos == pVec[j]->Pos)
         {
-            mp[pVec[i]] = pVec[j];
+            pVec[i]->LOCAL_MARK = pVec[j]->ID;
             pVec[i]->Removed = true;
             i++;
             nDeleted++;
@@ -955,9 +956,10 @@ unsigned int MeshReducerPrivate::removeDuplicateVertex()
         }
         for (unsigned int k = 0; k < 3; ++k)
         {
-            if (mp.find(face.Vertices[k]) != mp.end())
+            auto &vert = face.Vertices[k];
+            if (vert->LOCAL_MARK != vert->ID)
             {
-                face.Vertices[k] = mp[face.Vertices[k]];
+                face.Vertices[k] = &Vertices[vert->LOCAL_MARK];
             }
         }
     }
@@ -968,6 +970,13 @@ unsigned int MeshReducerPrivate::removeUnreferenceVertex()
 {
     std::size_t nVert = Vertices.size();
     std::vector<bool> bVec(nVert, false);
+
+    // clear LOCAL_MARK
+    for (auto &vert : Vertices)
+    {
+        vert.LOCAL_MARK = 0;
+    }
+    unsigned int VALID_MARK = 1;
     for (auto &face : Faces)
     {
         if (!face.Valid)
@@ -976,20 +985,20 @@ unsigned int MeshReducerPrivate::removeUnreferenceVertex()
         }
         for (auto &vert : face.Vertices)
         {
-            bVec[vert->ID] = true;
+            vert->LOCAL_MARK = VALID_MARK;
         }
     }
 
     unsigned int nDeleted = 0;
-    for (unsigned int i_vert = 0; i_vert < nVert; ++i_vert)
+    for (auto &vert : Vertices)
     {
-        if (Vertices[i_vert].Removed)
+        if (vert.Removed)
         {
             continue;
         }
-        if (!bVec[i_vert])
+        if (vert.LOCAL_MARK ^ VALID_MARK)
         {
-            Vertices[i_vert].Removed = true;
+            vert.Removed = true;
             nDeleted++;
         }
     }
