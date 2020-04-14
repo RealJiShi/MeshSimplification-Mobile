@@ -110,6 +110,9 @@ struct Face
     unsigned int OptEdge = 0;
     double Priority = 0.0;
 
+    // inter Normal
+    Vec3 Normal;
+
     void setCentral(Vertex *vert)
     {
         for (unsigned int i = 0; i < 3; ++i)
@@ -261,7 +264,7 @@ public:
         minQual = std::min(minQual, 1.0);
 
         // cost
-        double cost = ScaleFactor * QuadricCost;
+        double cost = ScaleFactor * QuadricCos
         if (cost <= QUADRIC_EPSILON)
         {
             cost = -1 / (start_old - end_old).length();
@@ -663,6 +666,9 @@ void MeshReducerPrivate::load(const double *vertices, const uint16_t *indices, u
             curr.Vertices[j]->Neighbors.push_back(&curr);
         }
 
+        // normal
+        curr.Normal = curr.normal();
+
         for (unsigned int j = 0; j < 3; ++j)
         {
             Vertex *v0 = curr.Vertices[j];
@@ -748,7 +754,7 @@ void MeshReducerPrivate::buildQuadricMatrix()
     for (auto &face : Faces)
     {
         // ax + by + cz + d = 0
-        Vec3 normal = face.normal();
+        Vec3 normal = face.Normal;
         if (!m_bStrictConstraint)
         {
             normal = normal.normalize();
@@ -767,14 +773,13 @@ void MeshReducerPrivate::buildQuadricMatrix()
     {
         for (auto &face : Faces)
         {
-            Vec3 normal = face.normal();
             for (unsigned int j = 0; j < 3; ++j)
             {
                 if (Edges[face.Edges[j]].AdjFaces == 1)
                 {
                     const Vec3 &start = face.Vertices[j]->Pos;
                     const Vec3 &end = face.Vertices[(j + 1) % 3]->Pos;
-                    const Vec3 &edgePlane = normal.cross((end - start).normalize());
+                    const Vec3 &edgePlane = face.Normal.cross((end - start).normalize());
                     double offset = -edgePlane.dot(start);
                     SymetricMatrix EQ(edgePlane.X, edgePlane.Y, edgePlane.Z, offset);
 
@@ -969,7 +974,6 @@ unsigned int MeshReducerPrivate::removeDuplicateVertex()
 unsigned int MeshReducerPrivate::removeUnreferenceVertex()
 {
     std::size_t nVert = Vertices.size();
-    std::vector<bool> bVec(nVert, false);
 
     // clear LOCAL_MARK
     for (auto &vert : Vertices)
