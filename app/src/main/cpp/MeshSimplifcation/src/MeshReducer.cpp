@@ -52,6 +52,10 @@ struct Vertex
     // use LOCAL_MARK to update
     unsigned int LOCAL_MARK = 0;
 
+    // inter variable
+    Vec3 Pivot;
+    double PivotSquare = 0.0;
+
     // Quadric Matrix
     SymetricMatrix Q;
 
@@ -163,13 +167,13 @@ struct Face
 
     double computeQuality() const
     {
-        const Vec3 &v0 = Vertices[0]->Pos;
-        const Vec3 &v1 = Vertices[1]->Pos;
-        const Vec3 &v2 = Vertices[2]->Pos;
+        Vertex *v0 = Vertices[Central];
+        Vertex *v1 = Vertices[(Central + 1) % 3];
+        Vertex *v2 = Vertices[(Central + 2) % 3];
 
-        const Vec3 &e0 = v1 - v0;
-        const Vec3 &e1 = v2 - v0;
-        const Vec3 &e2 = v2 - v1;
+        const Vec3 &e0 = v2 - v1;
+        const Vec3 &e1 = v1->Pivot;
+        const Vec3 &e2 = v2->Pivot;
 
         Vec3 normal = e0.cross(e1);
         double len_norm = normal.length();
@@ -179,8 +183,8 @@ struct Face
         }
 
         double len_e0 = e0.squaredLength();
-        double len_e1 = e1.squaredLength();
-        double len_e2 = e2.squaredLength();
+        double len_e1 = v1->PivotSquare;
+        double len_e2 = v2->PivotSquare;
         double max_edge = std::max(len_e0, std::max(len_e1, len_e2));
         if (max_edge == 0.0)
         {
@@ -222,8 +226,7 @@ public:
         start->Pos = optPos;
         end->Pos = optPos;
 
-        // for each face related to start vertex
-        double minQual = std::numeric_limits<double>::max();
+        std::vector<Face *> FaceCollections;
         for (auto &face : start->Neighbors)
         {
             if (!face->Valid)
@@ -235,12 +238,9 @@ public:
             {
                 continue;
             }
-
-            double quality = face->computeQuality();
-            minQual = std::min(minQual, quality);
+            FaceCollections.push_back(face);
         }
 
-        // for each face related to end vertex
         for (auto &face : end->Neighbors)
         {
             if (!face->Valid)
@@ -252,7 +252,37 @@ public:
             {
                 continue;
             }
+            FaceCollections.push_back(face);
+        }
 
+        for (auto &face : FaceCollections)
+        {
+            if (!face->V1()->NeedToUpdate)
+            {
+                face->V1()->NeedToUpdate = true;
+                face->V1()->Pivot = face->V1()->Pos - optPos;
+                face->V1()->PivotSquare = face->V1()->Pivot.squaredLength();
+            }
+            if (!face->V2()->NeedToUpdate)
+            {
+                face->V2()->NeedToUpdate = true;
+                face->V2()->Pivot = face->V2()->Pos - optPos;
+                face->V2()->PivotSquare = face->V2()->Pivot.squaredLength();
+            }
+        }
+
+        for (auto &face : FaceCollections)
+        {
+            for (auto &vert : face->Vertices)
+            {
+                vert->NeedToUpdate = false;
+            }
+        }
+
+        // for each face related to start vertex
+        double minQual = std::numeric_limits<double>::max();
+        for (auto &face : FaceCollections)
+        {
             double quality = face->computeQuality();
             minQual = std::min(minQual, quality);
         }
