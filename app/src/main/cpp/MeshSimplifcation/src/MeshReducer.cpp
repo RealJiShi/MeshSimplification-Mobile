@@ -217,8 +217,7 @@ public:
     }
 
     // priority = cost / (normal * tri_quality)
-    static double computePriority(const Vec3 &optPos, const SymetricMatrix &Q, const double &QuadricCost,
-                                  Vertex *start, Vertex *end)
+    static double computePriority(const Vec3 &optPos, const double &QuadricCost, Vertex *start, Vertex *end)
     {
         // replace the position with optPos
         Vec3 start_old = start->Pos;
@@ -370,7 +369,7 @@ public:
         SymetricMatrix Q = edge.Start->Q + edge.End->Q;
         double cost = 0.0;
         edge.OptPos = calcOptimalPosition(Q, edge.Start, edge.End, cost);
-        edge.Priority = computePriority(edge.OptPos, Q, cost, edge.Start, edge.End);
+        edge.Priority = computePriority(edge.OptPos, cost, edge.Start, edge.End);
     }
 
     static bool flipped(Vertex *start, Vertex *end, const Vec3 &optPos)
@@ -544,14 +543,14 @@ public:
         v0->Q += v1->Q;
         for (auto &v : VertexVec)
         {
+            // reset first
+            v->NeedToUpdate = false;
             Edges.emplace_back(v0, v);
+
             solve(Edges.back());
             // update mark
             Edges.back().LOCAL_MARK = GLOBAL_MARK;
             std::push_heap(Edges.begin(), Edges.end());
-
-            // reset
-            v->NeedToUpdate = false;
         }
         return nDeleted;
     }
