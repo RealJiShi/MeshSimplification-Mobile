@@ -20,6 +20,7 @@
 #include <sstream>
 #include <unordered_map>
 #include "MathUtil.h"
+#include "SSE2NEON.h"
 
 namespace
 {
@@ -211,8 +212,8 @@ public:
         double x = v.X;
         double y = v.Y;
         double z = v.Z;
-        // Q[0] * x * x + 2 * Q[1] * x * y + 2 * Q[2] * x * z + 2 * Q[3] * x + Q[4] * y * y + 2 * Q[5] * y * z + 2 * Q[6] * y + Q[7] * z * z + 2 * Q[8] * z + Q[9];
-        return (Q[0] * x + 2 * Q[1] * y + 2 * Q[2] * z + 2 * Q[3]) * x + (Q[4] * y + 2 * Q[5] * z + 2 * Q[6]) * y + (Q[7] * z + 2 * Q[8]) * z + Q[9];
+        return Q[0] * x * x + 2 * Q[1] * x * y + 2 * Q[2] * x * z + 2 * Q[3] * x + Q[4] * y * y + 2 * Q[5] * y * z + 2 * Q[6] * y + Q[7] * z * z + 2 * Q[8] * z + Q[9];
+        // return (Q[0] * x + 2 * Q[1] * y + 2 * Q[2] * z + 2 * Q[3]) * x + (Q[4] * y + 2 * Q[5] * z + 2 * Q[6]) * y + (Q[7] * z + 2 * Q[8]) * z + Q[9];
     }
 
     // priority = cost / (normal * tri_quality)
@@ -1010,8 +1011,8 @@ unsigned int MeshReducerPrivate::removeUnreferenceVertex()
 
 bool MeshReducerPrivate::isValid() const
 {
-    Vec3 min(std::numeric_limits<double>::max());
-    Vec3 max(std::numeric_limits<double>::min());
+    __m128 min = _mm_set1_ps(+std::numeric_limits<float>::infinity());
+    __m128 max = _mm_set1_ps(-std::numeric_limits<float>::infinity());
     for (auto vert : Vertices)
     {
         if (vert.Removed)
@@ -1019,18 +1020,14 @@ bool MeshReducerPrivate::isValid() const
             continue;
         }
 
-        // get scale
-        min.X = std::min(min.X, vert.Pos.X);
-        max.X = std::max(max.X, vert.Pos.X);
-
-        min.Y = std::min(min.Y, vert.Pos.Y);
-        max.Y = std::max(max.Y, vert.Pos.Y);
-
-        min.Z = std::min(min.Z, vert.Pos.Z);
-        max.Z = std::max(max.Z, vert.Pos.Z);
+        __m128 curr = _mm_setr_ps(1.0f, vert.Pos.Z, vert.Pos.Y, vert.Pos.X);
+        min = _mm_min_ps(curr, min);
+        max = _mm_max_ps(curr, max);
     }
 
-    double len_diag = (max - min).length();
+    Vec3 vmin(min[0], min[1], min[2]);
+    Vec3 vmax(max[0], max[1], max[2]);
+    double len_diag = (vmax - vmin).length();
     double len_diag_old = (OriginBBoxMax - OriginBBoxMin).length();
     double ratio = std::min(len_diag, len_diag_old) / std::max(len_diag, len_diag_old);
     return ratio > VALID_THRESHOLD;
