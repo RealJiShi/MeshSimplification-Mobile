@@ -55,7 +55,7 @@ struct Vertex
     // Quadric Matrix
     SymetricMatrix Q;
 
-    // adjecent faces
+    // adjacent faces
     std::list<Face *> Neighbors;
 };
 
@@ -67,7 +67,7 @@ struct Edge
     Vertex *Start = nullptr;
     Vertex *End = nullptr;
 
-    // Number of adjecent faces
+    // Number of adjacent faces
     unsigned int AdjFaces = 0;
 
     // collapse property for edge-based simplification
@@ -92,7 +92,7 @@ struct Face
         Vertices[2] = v2;
     }
 
-    // adjecent vertices
+    // adjacent vertices
     Vertex *Vertices[3] = {nullptr};
 
     // edges
@@ -102,26 +102,27 @@ struct Face
     bool Valid = true;
     bool Dirty = false;
 
-    // record v0 index
-    unsigned int Central = 0;
-
     // collapse property for fast simplification
     Vec3 OptPos;
     unsigned int OptEdge = 0;
     double Priority = 0.0;
 
-    // inter Normal
-    Vec3 Normal;
-
-    void setCentral(Vertex *vert)
+    void setCentral(Vertex *v0, Vertex *&v1, Vertex *&v2) const
     {
-        for (unsigned int i = 0; i < 3; ++i)
+        if (v0 == Vertices[0])
         {
-            if (vert == Vertices[i])
-            {
-                Central = i;
-                break;
-            }
+            v1 = Vertices[1];
+            v2 = Vertices[2];
+        }
+        else if (v0 == Vertices[1])
+        {
+            v1 = Vertices[2];
+            v2 = Vertices[0];
+        }
+        else if (v0 == Vertices[2])
+        {
+            v1 = Vertices[0];
+            v2 = Vertices[1];
         }
     }
 
@@ -137,19 +138,9 @@ struct Face
         }
     }
 
-    Vertex *V0()
+    bool containVertex(Vertex *p)
     {
-        return Vertices[Central];
-    }
-
-    Vertex *V1()
-    {
-        return Vertices[(Central + 1) % 3];
-    }
-
-    Vertex *V2()
-    {
-        return Vertices[(Central + 2) % 3];
+        return Vertices[0] == p || Vertices[1] == p || Vertices[2] == p;
     }
 
     Vec3 normal() const
@@ -164,15 +155,14 @@ struct Face
         return e0.cross(e1);
     }
 
-    double computeQuality() const
+    double computeQuality(Vertex *start, const Vec3 &optPos) const
     {
-        const Vec3 &v0 = Vertices[0]->Pos;
-        const Vec3 &v1 = Vertices[1]->Pos;
-        const Vec3 &v2 = Vertices[2]->Pos;
+        Vertex *v1 = nullptr;
+        Vertex *v2 = nullptr;
+        this->setCentral(start, v1, v2);
 
-        const Vec3 &e0 = v1 - v0;
-        const Vec3 &e1 = v2 - v0;
-        const Vec3 &e2 = v2 - v1;
+        const Vec3 &e0 = v2->Pos - v1->Pos;
+        const Vec3 &e1 = v1->Pos - optPos;
 
         Vec3 normal = e0.cross(e1);
         double len_norm = normal.length();
@@ -181,6 +171,7 @@ struct Face
             return 0;
         }
 
+        const Vec3 &e2 = v2->Pos - optPos;
         double len_e0 = e0.squaredLength();
         double len_e1 = e1.squaredLength();
         double len_e2 = e2.squaredLength();
@@ -216,46 +207,31 @@ public:
     }
 
     // priority = cost / (normal * tri_quality)
-    static double computePriority(const Vec3 &optPos, const double &QuadricCost, Vertex *start, Vertex *end)
+    static double computePriority(const Vec3 &optPos, const SymetricMatrix &Q, const double &QuadricCost,
+                                  Vertex *start, Vertex *end)
     {
-        // replace the position with optPos
-        Vec3 start_old = start->Pos;
-        Vec3 end_old = end->Pos;
-        start->Pos = optPos;
-        end->Pos = optPos;
-
         // for each face related to start vertex
         double minQual = std::numeric_limits<double>::max();
         for (auto &face : start->Neighbors)
         {
-            if (!face->Valid)
-            {
-                continue;
-            }
-            face->setCentral(start);
-            if (face->V1() == end || face->V2() == end)
+            if (!face->Valid || face->containVertex(end))
             {
                 continue;
             }
 
-            double quality = face->computeQuality();
+            double quality = face->computeQuality(start, optPos);
             minQual = std::min(minQual, quality);
         }
 
         // for each face related to end vertex
         for (auto &face : end->Neighbors)
         {
-            if (!face->Valid)
-            {
-                continue;
-            }
-            face->setCentral(end);
-            if (face->V1() == start || face->V2() == start)
+            if (!face->Valid || face->containVertex(start))
             {
                 continue;
             }
 
-            double quality = face->computeQuality();
+            double quality = face->computeQuality(end, optPos);
             minQual = std::min(minQual, quality);
         }
 
@@ -266,13 +242,9 @@ public:
         double cost = ScaleFactor * QuadricCost;
         if (cost <= QUADRIC_EPSILON)
         {
-            cost = -1 / (start_old - end_old).length();
+            cost = -1 / (start->Pos - end->Pos).length();
         }
         cost /= minQual;
-
-        // restore
-        start->Pos = start_old;
-        end->Pos = end_old;
         return cost;
     }
 
@@ -298,22 +270,19 @@ public:
                 cost = min;
                 if (min == cost0)
                 {
-                    optPos = v0;
+                    return v0;
                 }
                 else if (min == cost1)
                 {
-                    optPos = v1;
+                    return v1;
                 }
                 else
                 {
-                    optPos = mid;
+                    return mid;
                 }
             }
-            else
-            {
-                cost = getQuadricCost(optPos, Q);
-            }
         }
+        cost = getQuadricCost(optPos, Q);
         return optPos;
     }
 
@@ -342,7 +311,7 @@ public:
         SymetricMatrix Q = edge.Start->Q + edge.End->Q;
         double cost = 0.0;
         edge.OptPos = calcOptimalPosition(Q, edge.Start, edge.End, cost);
-        edge.Priority = computePriority(edge.OptPos, cost, edge.Start, edge.End);
+        edge.Priority = computePriority(edge.OptPos, Q, cost, edge.Start, edge.End);
     }
 
     static bool flipped(Vertex *start, Vertex *end, const Vec3 &optPos)
@@ -354,19 +323,17 @@ public:
 
         for (auto neighbor : start->Neighbors)
         {
-            if (!neighbor->Valid)
+            if (!neighbor->Valid || neighbor->containVertex(end))
             {
                 continue;
             }
 
-            neighbor->setCentral(start);
-            if (neighbor->V1() == end || neighbor->V2() == end)
-            {
-                continue;
-            }
+            Vertex *v1 = nullptr;
+            Vertex *v2 = nullptr;
+            neighbor->setCentral(start, v1, v2);
+            Vec3 d1 = (v1->Pos - optPos).normalize();
+            Vec3 d2 = (v2->Pos - optPos).normalize();
 
-            Vec3 d1 = (neighbor->V1()->Pos - optPos).normalize();
-            Vec3 d2 = (neighbor->V2()->Pos - optPos).normalize();
             if (std::fabs(d1.dot(d2)) > AREA_TOLERANCE)
             {
                 return true;
@@ -411,7 +378,7 @@ public:
             }
 
             // try to remove the face
-            if (v0 == (*iter)->Vertices[0] || v0 == (*iter)->Vertices[1] || v0 == (*iter)->Vertices[2])
+            if ((*iter)->containVertex(v0))
             {
                 nDeleted++;
                 (*iter)->Valid = false;
@@ -440,7 +407,7 @@ public:
             }
 
             // try to remove the face
-            if (v1 == (*iter)->Vertices[0] || v1 == (*iter)->Vertices[1] || v1 == (*iter)->Vertices[2])
+            if ((*iter)->containVertex(v1))
             {
                 (*iter)->Valid = false;
                 v0->Neighbors.erase(iter);
@@ -480,7 +447,7 @@ public:
                 continue;
             }
             // remove the face
-            if (v0 == (*iter)->Vertices[0] || v0 == (*iter)->Vertices[1] || v0 == (*iter)->Vertices[2])
+            if ((*iter)->containVertex(v0))
             {
                 // set face as invalid
                 (*iter)->Valid = false;
@@ -500,16 +467,18 @@ public:
             {
                 continue;
             }
-            neighbor->setCentral(v0);
-            if (!neighbor->V1()->NeedToUpdate)
+            Vertex *v1 = nullptr;
+            Vertex *v2 = nullptr;
+            neighbor->setCentral(v0, v1, v2);
+            if (!v1->NeedToUpdate)
             {
-                neighbor->V1()->NeedToUpdate = true;
-                VertexVec.push_back(neighbor->V1());
+                v1->NeedToUpdate = true;
+                VertexVec.push_back(v1);
             }
-            if (!neighbor->V2()->NeedToUpdate)
+            if (!v2->NeedToUpdate)
             {
-                neighbor->V2()->NeedToUpdate = true;
-                VertexVec.push_back(neighbor->V2());
+                v2->NeedToUpdate = true;
+                VertexVec.push_back(v2);
             }
         }
 
@@ -518,7 +487,9 @@ public:
         {
             // reset
             v->NeedToUpdate = false;
-
+        }
+        for (auto &v : VertexVec)
+        {
             Edges.emplace_back(v0, v);
             solve(Edges.back());
             // update mark
@@ -655,8 +626,9 @@ void MeshReducerPrivate::load(const double *vertices, const uint16_t *indices, u
     OriginBBoxMin = min;
 
     // build faces
-    Faces.resize(nInd / 3);
-    for (unsigned int i_face = 0; i_face < nInd / 3; ++i_face)
+    unsigned int nFace = nInd / 3;
+    Faces.resize(nFace);
+    for (unsigned int i_face = 0; i_face < nFace; ++i_face)
     {
         auto &curr = Faces[i_face];
         for (unsigned int j = 0; j < 3; ++j)
@@ -664,9 +636,6 @@ void MeshReducerPrivate::load(const double *vertices, const uint16_t *indices, u
             curr.Vertices[j] = &Vertices[indices[i_face * 3 + j]];
             curr.Vertices[j]->Neighbors.push_back(&curr);
         }
-
-        // normal
-        curr.Normal = curr.normal();
 
         for (unsigned int j = 0; j < 3; ++j)
         {
@@ -753,7 +722,7 @@ void MeshReducerPrivate::buildQuadricMatrix()
     for (auto &face : Faces)
     {
         // ax + by + cz + d = 0
-        Vec3 normal = face.Normal;
+        Vec3 normal = face.normal();
         if (!m_bStrictConstraint)
         {
             normal = normal.normalize();
@@ -772,19 +741,24 @@ void MeshReducerPrivate::buildQuadricMatrix()
     {
         for (auto &face : Faces)
         {
+            Vec3 normal = face.normal();
             for (unsigned int j = 0; j < 3; ++j)
             {
                 if (Edges[face.Edges[j]].AdjFaces == 1)
                 {
-                    const Vec3 &start = face.Vertices[j]->Pos;
-                    const Vec3 &end = face.Vertices[(j + 1) % 3]->Pos;
-                    const Vec3 &edgePlane = face.Normal.cross((end - start).normalize());
-                    double offset = -edgePlane.dot(start);
+                    Vertex *start = face.Vertices[j];
+                    Vertex *end = face.Vertices[(j + 1) % 3];
+
+                    const Vec3 &pStart = start->Pos;
+                    const Vec3 &pEnd = end->Pos;
+
+                    const Vec3 &edgePlane = normal.cross((pEnd - pStart).normalize());
+                    double offset = -edgePlane.dot(pStart);
                     SymetricMatrix EQ(edgePlane.X, edgePlane.Y, edgePlane.Z, offset);
 
                     // add to related vertices
-                    face.Vertices[j]->Q += EQ;
-                    face.Vertices[(j + 1) % 3]->Q += EQ;
+                    start->Q += EQ;
+                    end->Q += EQ;
                 }
             }
         }
@@ -920,6 +894,7 @@ unsigned int MeshReducerPrivate::removeDuplicateVertex()
         if (!vert.Removed)
         {
             pVec[i_valid] = &vert;
+            vert.LOCAL_MARK = vert.ID;
             i_valid++;
         }
     }
@@ -932,13 +907,9 @@ unsigned int MeshReducerPrivate::removeDuplicateVertex()
     unsigned int i = 1;
     unsigned int nDeleted = 0;
     unsigned int INVALID_MARK = Vertices.size();
-    for (auto &vert : pVec)
-    {
-        vert->LOCAL_MARK = vert->ID;
-    }
     for (; i != i_valid;)
     {
-        if (!pVec[i]->Removed && !pVec[j]->Removed && pVec[i]->Pos == pVec[j]->Pos)
+        if (pVec[i]->Pos == pVec[j]->Pos)
         {
             pVec[i]->LOCAL_MARK = pVec[j]->ID;
             pVec[i]->Removed = true;
@@ -974,12 +945,7 @@ unsigned int MeshReducerPrivate::removeUnreferenceVertex()
 {
     std::size_t nVert = Vertices.size();
 
-    // clear LOCAL_MARK
-    for (auto &vert : Vertices)
-    {
-        vert.LOCAL_MARK = 0;
-    }
-    unsigned int VALID_MARK = 1;
+    unsigned int VALID_MARK = std::numeric_limits<unsigned int>::max();
     for (auto &face : Faces)
     {
         if (!face.Valid)
