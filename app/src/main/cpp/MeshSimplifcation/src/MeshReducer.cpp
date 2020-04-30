@@ -438,7 +438,7 @@ public:
         return nDeleted;
     }
 
-    static unsigned int update(Edge &edge, std::vector<Edge> &Edges)
+    static unsigned int update(Edge &edge, std::vector<Edge> &Edges, std::vector<Vertex *> &VertexVecCache)
     {
         // update global mark
         GLOBAL_MARK++;
@@ -474,7 +474,8 @@ public:
             v0->Neighbors.push_back(*iter);
         }
 
-        std::vector<Vertex *> VertexVec;
+        VertexVecCache.clear();
+        std::vector<Vertex *> &VertexVec = VertexVecCache;
         for (auto &neighbor : v0->Neighbors)
         {
             if (!neighbor->Valid)
@@ -561,6 +562,7 @@ private:
     // build edge for border setup
     std::unordered_map<uint64_t, unsigned int> EdgeMap;
     std::vector<Edge> Edges;
+    std::vector<Vertex *> VertexVecCache;
 
     // Bounding box
     Vec3 OriginBBoxMin;
@@ -860,7 +862,7 @@ void MeshReducerPrivate::doStrictLoop(unsigned int nTarget)
         }
 
         // update
-        unsigned int nDeleted = CollapseHelper::update(top, Edges);
+        unsigned int nDeleted = CollapseHelper::update(top, Edges, VertexVecCache);
         nowCount -= nDeleted;
     }
 }
