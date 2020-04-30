@@ -106,6 +106,7 @@ struct Face
     Vec3 OptPos;
     unsigned int OptEdge = 0;
     double Priority = 0.0;
+    double cachedQuality = -1;
 
     void setCentral(Vertex *v0, Vertex *&v1, Vertex *&v2) const
     {
@@ -136,6 +137,7 @@ struct Face
                 break;
             }
         }
+        cachedQuality = -1;
     }
 
     bool containVertex(Vertex *p)
@@ -155,8 +157,13 @@ struct Face
         return e0.cross(e1);
     }
 
-    double computeQuality(Vertex *start, const Vec3 &optPos) const
+    double computeQuality(Vertex *start, const Vec3 &optPos, bool bUseCacheQuality)
     {
+        if (bUseCacheQuality && cachedQuality >= 0)
+        {
+            return cachedQuality;
+        }
+
         Vertex *v1 = nullptr;
         Vertex *v2 = nullptr;
         this->setCentral(start, v1, v2);
@@ -179,6 +186,11 @@ struct Face
         if (max_edge == 0.0)
         {
             return 0;
+        }
+        double quality = len_norm / max_edge;
+        if (bUseCacheQuality)
+        {
+            cachedQuality = quality;
         }
         return len_norm / max_edge;
     }
@@ -211,6 +223,8 @@ public:
                                   Vertex *start, Vertex *end)
     {
         // for each face related to start vertex
+        bool bSameStart = start->Pos == optPos;
+        bool bSameEnd = start->Pos == optPos;
         double minQual = std::numeric_limits<double>::max();
         for (auto &face : start->Neighbors)
         {
@@ -219,7 +233,7 @@ public:
                 continue;
             }
 
-            double quality = face->computeQuality(start, optPos);
+            double quality = face->computeQuality(start, optPos, bSameStart);
             minQual = std::min(minQual, quality);
         }
 
@@ -231,7 +245,7 @@ public:
                 continue;
             }
 
-            double quality = face->computeQuality(end, optPos);
+            double quality = face->computeQuality(end, optPos, bSameEnd);
             minQual = std::min(minQual, quality);
         }
 
@@ -655,13 +669,9 @@ void MeshReducerPrivate::load(const double *vertices, const uint16_t *indices, u
     {
         if (edge.AdjFaces == 1)
         {
-            nonManiEdge++;
+            m_bStrictConstraint = true;
+            break;
         }
-    }
-
-    if (nonManiEdge > 0)
-    {
-        m_bStrictConstraint = true;
     }
 }
 
@@ -906,7 +916,6 @@ unsigned int MeshReducerPrivate::removeDuplicateVertex()
     unsigned int j = 0;
     unsigned int i = 1;
     unsigned int nDeleted = 0;
-    unsigned int INVALID_MARK = Vertices.size();
     for (; i != i_valid;)
     {
         if (pVec[i]->Pos == pVec[j]->Pos)
@@ -943,8 +952,6 @@ unsigned int MeshReducerPrivate::removeDuplicateVertex()
 
 unsigned int MeshReducerPrivate::removeUnreferenceVertex()
 {
-    std::size_t nVert = Vertices.size();
-
     unsigned int VALID_MARK = std::numeric_limits<unsigned int>::max();
     for (auto &face : Faces)
     {
