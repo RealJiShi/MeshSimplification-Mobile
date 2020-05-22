@@ -26,7 +26,7 @@ namespace {
     static const unsigned int TIMEOUT = 5;
     static const unsigned int MAX_ITERATION = 100;
     static const double QUADRIC_EPSILON = 1e-15;
-    static const double VALID_THRESHOLD = 0.98;
+    static const double VALID_THRESHOLD = 0.9604;
     static const double AGGRESSIVE = 8.0;
     static const double AREA_TOLERANCE = 0.999;
     static const double NORMAL_TOLERANCE = 0.2;
@@ -45,8 +45,7 @@ namespace {
         bool Removed = false;
 
         // Need to update?
-        Edge *toUpdateEdge = nullptr;
-        //bool NeedToUpdate = false;
+        Edge *ToUpdateEdge = nullptr;
 
         // use LOCAL_MARK to update
         unsigned int LOCAL_MARK = 0;
@@ -55,16 +54,15 @@ namespace {
         SymetricMatrix Q;
 
         // adjacent faces
-        std::vector<Face *> Neighbors;
+        std::list<Face *> Neighbors;
 
         void reset() {
             Neighbors.clear();
             LOCAL_MARK = 0;
-            toUpdateEdge = nullptr;
+            ToUpdateEdge = nullptr;
             ID = 0;
             Removed = false;
             Q.reset();
-            //NeedToUpdate = false;
         }
     };
 
@@ -83,71 +81,68 @@ namespace {
         double Priority = 0.0;
         Vec3 OptPos;
 
-        void replaceVertex(Vertex *dst, Vertex *src) {
-            if (Start == dst) {
+        // heap related
+        int HeapIndex = -1;
+        Edge *ToBeReplaced = nullptr;
+
+        void replaceVertex(Vertex *dst, Vertex *src)
+        {
+            if (Start == dst)
+            {
                 Start = src;
-            } else if (End == dst) {
+            }
+            else if (End == dst)
+            {
                 End = src;
             }
         }
 
-        bool containVertex(Vertex *v1) {
-            return (Start == v1) || (End == v1);
+        bool containVertex(Vertex *v)
+        {
+            return (Start == v) || (End == v);
         }
 
-        bool containVertex(Vertex *v1, Vertex *v2) {
-            return (Start == v1 && End == v2) || (Start == v2 && End == v1);
+        bool containVertex(Vertex *start, Vertex *end)
+        {
+            return (Start == start && End == end) || (Start == end && End == start);
         }
 
+        void update(Vertex *start, Vertex *end)
+        {
+            // update vertices
+            Start = start;
+            End = end;
 
-        void updateEdge(Vertex *v0, Vertex *v1) {
-            Start = v0;
-            End = v1;
-
-            // Number of adjacent faces
+            // adjacent faces
             AdjFaces = 0;
 
-            // collapse property for edge-based simplification
+            // attributes
             LOCAL_MARK = 0;
             Priority = 0.0;
             HeapIndex = -1;
-            toBeReplaced = nullptr;
+            ToBeReplaced = nullptr;
         }
 
-
-        int HeapIndex = -1;
-        Edge *toBeReplaced = nullptr;;
-
-        bool sameEndWith(Edge *b) {
-            if (Start == b->Start && End == b->End) return true;
-            if (Start == b->End && End == b->Start) return true;
-            return false;
+        uint64_t getKey() const
+        {
+            return Start->ID < End->ID ? ((uint64_t(Start->ID) << 32) | End->ID) : ((uint64_t(End->ID) << 32) | Start->ID);
         }
-
-        uint64_t getKey() {
-            auto v0 = Start;
-            auto v1 = End;
-            return v0->ID < v1->ID ? (uint64_t(v0->ID) << 32) | v1->ID : (uint64_t(v1->ID) << 32) |
-                                                                         v0->ID;
-        }
-
-        bool smallerPriority(Edge *p) {
-            return this->Priority < p->Priority;
-        }
-
     };
-
 
     struct Face {
         Face() {}
 
-        void reset() {
-            Vertices[0] = Vertices[1] = Vertices[2] = nullptr;
-            ConsistentEdges[0] = ConsistentEdges[1] = ConsistentEdges[2] = nullptr;
+        void reset()
+        {
+            for (uint32_t i = 0; i < 3; ++i)
+            {
+                Vertices[i] = nullptr;
+                Edges[i] = nullptr;
+            }
 
+            // attributes
             Valid = true;
             LOCAL_MARK = 0;
-
             OptEdge = 0;
         }
 
@@ -155,7 +150,7 @@ namespace {
         Vertex *Vertices[3] = {nullptr};
 
         // edges
-        Edge *ConsistentEdges[3] = {0};
+        Edge *Edges[3] = {0};
 
         // valid & dirty(need to update)
         bool Valid = true;
@@ -166,53 +161,50 @@ namespace {
 
         double priority = 0;
 
-        void GetEdgesByVertex(Vertex *v0, Edge *&e1, Edge *&e2) {
-            if (v0 == Vertices[0]) {
-                e1 = ConsistentEdges[0];
-                e2 = ConsistentEdges[2];
-            } else if (v0 == Vertices[1]) {
-                e1 = ConsistentEdges[0];
-                e2 = ConsistentEdges[1];
-            } else //if (v0 == Vertices[2])
+        // get connected edges
+        void getEdges(Vertex *v, Edge *&e1, Edge *&e2)
+        {
+            for (uint32_t i = 0; i < 3; ++i)
             {
-                e1 = ConsistentEdges[1];
-                e2 = ConsistentEdges[2];
+                if (v == Vertices[i])
+                {
+                    e1 = Edges[(i + 2) % 3];
+                    e2 = Edges[i];
+                    break;
+                }
             }
         }
 
-        void setCentral(Vertex *v0, Vertex *&v1, Vertex *&v2) const {
-            if (v0 == Vertices[0]) {
-                v1 = Vertices[1];
-                v2 = Vertices[2];
-            } else if (v0 == Vertices[1]) {
-                v1 = Vertices[2];
-                v2 = Vertices[0];
-            } else //if (v0 == Vertices[2])
+        void setCentral(Vertex *v0, Vertex *&v1, Vertex *&v2) const
+        {
+            for (uint32_t i = 0; i < 3; ++i)
             {
-                v1 = Vertices[0];
-                v2 = Vertices[1];
+                if (v0 == Vertices[i])
+                {
+                    v1 = Vertices[(i + 1) % 3];
+                    v2 = Vertices[(i + 2) % 3];
+                    break;
+                }
             }
         }
 
-
-        void replaceKeepTopology(Vertex *dst, Vertex *src) {
-            if (dst == Vertices[0]) {
-                Vertices[0] = src;
-                ConsistentEdges[0]->replaceVertex(dst, src);
-                ConsistentEdges[2]->replaceVertex(dst, src);
-            } else if (dst == Vertices[1]) {
-                Vertices[1] = src;
-                ConsistentEdges[0]->replaceVertex(dst, src);
-                ConsistentEdges[1]->replaceVertex(dst, src);
-            } else if (dst == Vertices[2]) {
-                Vertices[2] = src;
-                ConsistentEdges[1]->replaceVertex(dst, src);
-                ConsistentEdges[2]->replaceVertex(dst, src);
+        void replace(Vertex *dst, Vertex *src)
+        {
+            for (uint32_t i = 0; i < 3; ++i)
+            {
+                if (dst == Vertices[i])
+                {
+                    Vertices[i] = src;
+                    Edges[i]->replaceVertex(dst, src);
+                    Edges[(i + 2) % 3]->replaceVertex(dst, src);
+                    break;
+                }
             }
         }
 
-        bool containVertex(Vertex *p) {
-            return Vertices[0] == p || Vertices[1] == p || Vertices[2] == p;
+        bool containVertex(Vertex *v) const
+        {
+            return Vertices[0] == v || Vertices[1] == v || Vertices[2] == v;
         }
 
         Vec3 normal() const {
@@ -238,7 +230,7 @@ namespace {
 
             double len_norm = normal.length();
             if (len_norm == 0.0) {
-                return 0; //the opts pos on the same line
+                return 0;
             }
 
             const Vec3 &e2 = v2->Pos - optPos;
@@ -248,316 +240,366 @@ namespace {
             double max_edge = std::max(len_e0, std::max(len_e1, len_e2));
 
             return len_norm / max_edge;
-
         }
 
-        void getEdgesByVertex(Vertex *v0, Vertex *v1, Edge *&v2v1, Edge *&v2v0) {
-            if (Vertices[0] == v0) {
-                if (Vertices[1] == v1)  //v0 0 v1 1 v2 2
+        // get opposite edges
+        void getEdges(Vertex *v0, Vertex *v1, Edge *&v2v1, Edge *&v2v0) {
+            if (Vertices[0] == v0)
+            {
+                if (Vertices[1] == v1)
                 {
-                    v2v1 = this->ConsistentEdges[1];
-                    v2v0 = this->ConsistentEdges[2];
-                } else //v1 -> 2        //v0 0  v2 1 v1 2
-                {
-                    v2v0 = this->ConsistentEdges[0];
-                    v2v1 = this->ConsistentEdges[1];
+                    v2v1 = this->Edges[1];
+                    v2v0 = this->Edges[2];
                 }
-            } else if (Vertices[1] == v0) {
-                if (Vertices[2] == v1)  //v2 0  v0 1 v1 2
+                else
                 {
-                    v2v1 = this->ConsistentEdges[2];
-                    v2v0 = this->ConsistentEdges[0];
-                } else  //v1-> 0			//v1 0  v0 1 v2 2
-                {
-                    v2v1 = this->ConsistentEdges[2];
-                    v2v0 = this->ConsistentEdges[1];
-                }
-            } else {// if (Vertices[2] == v0) {
-                if (Vertices[0] == v1)  //v1 0  v2 1 v0 2
-                {
-                    v2v1 = this->ConsistentEdges[0];
-                    v2v0 = this->ConsistentEdges[1];
-                } else                    //v2 0  v1 1 v0 2
-                {
-                    v2v1 = this->ConsistentEdges[0];
-                    v2v0 = this->ConsistentEdges[2];
+                    v2v0 = this->Edges[0];
+                    v2v1 = this->Edges[1];
                 }
             }
+            else if (Vertices[1] == v0)
+            {
+                if (Vertices[2] == v1)
+                {
+                    v2v1 = this->Edges[2];
+                    v2v0 = this->Edges[0];
+                }
+                else
+                {
+                    v2v1 = this->Edges[2];
+                    v2v0 = this->Edges[1];
+                }
+            }
+            else
+            {
+                if (Vertices[0] == v1)
+                {
+                    v2v1 = this->Edges[0];
+                    v2v0 = this->Edges[1];
+                }
+                else
+                {
+                    v2v1 = this->Edges[0];
+                    v2v0 = this->Edges[2];
+                }
+            }
         }
 
-        void replaceDuplicateEdge() {
-            if (ConsistentEdges[0]->toBeReplaced != nullptr) {
-                ConsistentEdges[0] = ConsistentEdges[0]->toBeReplaced;
-            }
-            if (ConsistentEdges[1]->toBeReplaced != nullptr) {
-                ConsistentEdges[1] = ConsistentEdges[1]->toBeReplaced;
-            }
-            if (ConsistentEdges[2]->toBeReplaced != nullptr) {
-                ConsistentEdges[2] = ConsistentEdges[2]->toBeReplaced;
+        void replaceDuplicatedEdge()
+        {
+            for (uint32_t i = 0; i < 3; ++i)
+            {
+                if (Edges[i]->ToBeReplaced)
+                {
+                    Edges[i] = Edges[i]->ToBeReplaced;
+                }
             }
         }
 
-
-        void markV2V1ReplacedByV2V0(Vertex *v0, Vertex *v1) {
-            Edge *v2v1 = nullptr;
-            Edge *v2v0 = nullptr;
-            this->getEdgesByVertex(v0, v1, v2v1, v2v0);
-            v2v1->toBeReplaced = v2v0;
-            //return v2v1;
-        }
-
-        Edge *GetV2V1ReplacedByV2V0(Vertex *v0, Vertex *v1) {
-            Edge *v2v1 = nullptr;
-            Edge *v2v0 = nullptr;
-            this->getEdgesByVertex(v0, v1, v2v1, v2v0);
-            v2v1->toBeReplaced = v2v0;
-            return v2v1;
+        Edge* replaceEdge(Vertex *start, Vertex *end)
+        {
+            Edge *sEdge = nullptr;
+            Edge *eEdge = nullptr;
+            getEdges(start, end, sEdge, eEdge);
+            sEdge->ToBeReplaced = eEdge;
+            return sEdge;
         }
     };
 
-    struct MinEdgeHeap {
-        Edge **arr;
-        int size;
-
-        MinEdgeHeap(std::vector<Edge *> &edges) {
-            arr = &edges[0];
-            size = edges.size();
-
+    struct EdgeHeap
+    {
+        EdgeHeap(std::vector<Edge*> &Edges) : Container(Edges), Length(Edges.size())
+        {
             //how to get
-            for (int idx = 1; idx < size; ++idx) {
-                heapifyUpInit(idx);
+            for (int idx = 1; idx < Length; ++idx) {
+                initElement(idx);
             }
-            for (int i = size - 1; i >= 0; --i) {
-                arr[i]->HeapIndex = i;
+            for (int i = 0; i < Length; ++i)
+            {
+                Container[i]->HeapIndex = i;
             }
         }
 
-        Edge *extractMin() {
-            Edge *item = arr[0];
-            item->HeapIndex = -1; //mark as not inside heap anymore
-
-            //Remove the last element
-            size--;
-            if (size != 0) //current item is not the previous last item. Swap needed
+        void initElement(int idx)
+        {
+            int parent = (idx - 1) >> 1;
+            auto e = Container[idx];
+            // heap up
+            while (e->Priority < Container[parent]->Priority)
             {
-                //This messes up the index field
-                arr[0] = arr[size]; //get previous last element
-                //So reset it
-                arr[0]->HeapIndex = 0;
+                // swap and keep indexes updated
+                Container[idx] = Container[parent];
 
-                //////Heapify from the position we just messed with
-                heapifyDown(arr[0]);
+                // top
+                if (parent == 0)
+                {
+                    Container[0] = e;
+                    return;
+                }
+
+                idx = parent;
+                parent = (idx - 1) >> 1;
             }
+
+            Container[idx] = e;
+            return;
+        }
+
+        Edge *top()
+        {
+            Edge *item = Container[0];
+            // mark as not inside heap anymore
+            item->HeapIndex = -1;
+            if (Length > 1)
+            {
+                // move the last one to top
+                Container[0] = Container[Length - 1];
+                Container[0]->HeapIndex = 0;
+                // heap down
+                heapifyDown(Container[0]);
+            }
+
+            // Remove the last element
+            --Length;
             return item;
         }
 
-        void updateHeapEdgePriority(Edge *e, double priority) {
-            if (arr[e->HeapIndex] != e) {
-                std::cout << "ERROR>  heapifyDown  MUST FIX............";
-                return;
-            }
-
-            if (priority < e->Priority) {
-                e->Priority = priority;
+        void update(Edge *e, double prev_priority)
+        {
+            if (e->Priority < prev_priority)
+            {
                 heapifyUp(e);
-            } else if (priority > e->Priority) {
-                e->Priority = priority;
+            }
+            else if (e->Priority > prev_priority)
+            {
                 heapifyDown(e);
             }
         }
 
-        //No performance gain if we do the delete edge..
-        void deleteEdge(Edge *deletedEdge) {
-            int pos = deletedEdge->HeapIndex;
-            if (pos >= 0 && pos < size && deletedEdge == arr[pos]) {
-            } else {
-                if (deletedEdge->HeapIndex !=
-                    -2) //already deleted, as same face with diff orientation exist
-                {
-                    std::cout << "ERROR...DELETE EDGE should not be here" << std::endl;
-                }
+        void remove(Edge *e)
+        {
+            // get current index
+            int cur_idx = e->HeapIndex;
+            if (cur_idx < 0 || cur_idx >= Length || e != Container[cur_idx])
+            {
                 return;
             }
-            deletedEdge->HeapIndex = -2;//-2 means deleteEdge
-            //Remove the last element
-            size--;
-            if (pos != size)//if pos is not the previous last element, swap needed
+
+            // mark as removed
+            e->HeapIndex = -2;
+
+            if (cur_idx != (Length - 1))
             {
-                //This messes up the index field
-                auto e = arr[size];// get the previous last element
-                //So reset it
-                arr[pos] = e;
-                e->HeapIndex = pos;
-
-                if (e->Priority < deletedEdge->Priority) {
-                    heapifyUp(e);
-                } else if (e->Priority > deletedEdge->Priority) {
-                    heapifyDown(e);
+                auto last = Container[cur_idx];
+                Container[cur_idx] = last;
+                last->HeapIndex = cur_idx;
+                if (last->Priority < e->Priority)
+                {
+                    heapifyUp(last);
+                }
+                else if (last->Priority > e->Priority)
+                {
+                    heapifyDown(last);
                 }
             }
+
+            // remove
+            --Length;
         }
 
-    private:// function to heapify the tree
+        void pop(Edge *edge)
+        {
+            // get current index
+            int cur_idx = edge->HeapIndex;
+            if (cur_idx < 0 || cur_idx >= Length || edge != Container[cur_idx])
+            {
+                return;
+            }
 
-        //heapifyUpInit expect pos >= 1
-        void heapifyUpInit(int pos) {
-            int parent = (pos - 1) >> 1;// / 2;
+            // mark as removed
+            edge->HeapIndex = -2;
+            if (cur_idx != (Length - 1))
+            {
+                auto last = Container[Length - 1];
+                Container[cur_idx] = last;
+                last->HeapIndex = cur_idx;
+                if (last->Priority < edge->Priority)
+                {
+                    heapifyUp(last);
+                }
+                else if (last->Priority > edge->Priority)
+                {
+                    heapifyDown(last);
+                }
+            }
 
-            auto e = arr[pos];
-            while (e->Priority < arr[parent]->Priority) {
-                // swap and keep indexes updated
-                arr[pos] = arr[parent];
-                //heap[parent] = e;
+            // remove
+            --Length;
+        }
 
-                if (parent == 0) {
-                    arr[0] = e;
+        void heapifyUp(Edge *e)
+        {
+            if (e->HeapIndex == 0)
+            {
+                return;
+            }
+
+            // get current index & parent
+            int idx = e->HeapIndex;
+            int parent = (idx - 1) >> 1;
+
+            // heap up
+            while (e->Priority < Container[parent]->Priority)
+            {
+                // swap
+                std::swap(Container[idx], Container[parent]);
+                Container[idx]->HeapIndex = idx;
+                Container[parent]->HeapIndex = parent;
+
+                // top
+                if (parent == 0)
+                {
                     return;
                 }
 
-                pos = parent;
-                parent = (pos - 1) >> 1;
+                // update index
+                idx = parent;
+                parent = (idx - 1) >> 1;
             }
-
-            arr[pos] = e;
-            return;
         }
 
-        void heapifyUp(Edge *e) {
-            if (e->HeapIndex == 0) return;
+        void heapifyDown(Edge *e)
+        {
             int pos = e->HeapIndex;
 
-            int parent = (pos - 1) >> 1;// / 2;
-            while (e->smallerPriority(arr[parent])) {
-                // swap and keep indexes updated
-                arr[pos] = arr[parent];
-                arr[pos]->HeapIndex = pos; //update latest pos element's index
-                //heap[parent] = e;
-
-                if (parent == 0) //already at the top of heap
-                {
-                    e->HeapIndex = 0;
-                    arr[0] = e;
-                    return;
-                }
-
-                pos = parent;
-                parent = (pos - 1) >> 1;
+            // get left & right children
+            int left = (pos << 1) + 1;
+            if (left >= Length)
+            {
+                return;
             }
 
-            //pos has been updated. need to sync now
-            arr[pos] = e;
-            e->HeapIndex = pos; //update target edge's index
-            return;
-        }
-
-        void heapifyDown(Edge *e) {
-            int pos = e->HeapIndex;
-
-            int l = (pos << 1) + 1;// 2 * pos + 1;
-            if (l >= size) return;//already the leaf node. no need to do anything
-
-            int r = l + 1;// 2 * pos + 2;
-            int smallest = pos; // root is the Smallest element
-            // If left child is smaller than root
-            while (true) {
-
-                //if (l < n && heap[l]->Priority < e->Priority)
-                if (arr[l]->smallerPriority(e))
-                    smallest = l;
-
-                // If right child is smaller than largest so far
-                if (r < size && arr[r]->smallerPriority(arr[smallest]))
-                    smallest = r;
-
-                if (smallest == pos) //already the smallest
+            int right = left + 1;
+            int smallest = pos;
+            while (1)
+            {
+                if (Container[left]->Priority < e->Priority)
                 {
-                    e->HeapIndex = pos; //no need to swap down
+                    smallest = left;
+                }
+
+                if (right < Length && Container[right]->Priority < Container[smallest]->Priority)
+                {
+                    smallest = right;
+                }
+
+                // already the smallest
+                if (smallest == pos)
+                {
+                    e->HeapIndex = pos;
                     return;
                 }
 
-                // swap and keep indexes updated
-                arr[pos] = arr[smallest];
-                arr[pos]->HeapIndex = pos; //update latest pos element's index
+                // swap
+                std::swap(Container[pos], Container[smallest]);
+                Container[pos]->HeapIndex = pos;
+                Container[smallest]->HeapIndex = smallest;
 
-                arr[smallest] = e; //heap[smallest] might be used
-
-                l = (smallest << 1) + 1;// 2 * pos + 1;
-                if (l >= size) {
-                    e->HeapIndex = smallest; //no need to swap down, currently e located at smallest
-                    return;//already the leaf node. no need to do anything
+                left = (smallest << 1) + 1;
+                if (left >= Length)
+                {
+                    return;
                 }
 
                 pos = smallest;
-                r = l + 1;// (pos << 1) + 2;// 2 * pos + 2;
+                right = left + 1;
             }
         }
+
+        std::vector<Edge *> &Container;
+        int Length = 0;
     };
 
     class CollapseHelper {
     public:
         static unsigned int GLOBAL_MARK;
         static double ScaleFactor;
-        static SymetricMatrix tempQ;
 
+        // Face pool to reduce memory reallocation
+        static std::vector<Face *> FacePool;
+        static uint32_t FacePoolIdx;
 
-        static std::vector<Face *> FacesPool;
-        static size_t facePoolIdx;
+        // Edge pool to reduce memory reallocation
+        static std::vector<Edge *> EdgePool;
+        static uint32_t EdgePoolIdx;
 
-        static std::vector<Edge *> EdgesPool;
-        static size_t edgePoolIdx;
+        // Edge pool to reduce memory reallocation
         static std::vector<Vertex *> VertexPool;
-        static size_t vertexPoolIdx;
+        static uint32_t VertexPoolIdx;
 
-        static void reset() {
+        static void reset()
+        {
             GLOBAL_MARK = 0;
             ScaleFactor = 1.0;
-            edgePoolIdx = 0;
-            vertexPoolIdx = 0;
-            facePoolIdx = 0;
+            EdgePoolIdx = 0;
+            VertexPoolIdx = 0;
+            FacePoolIdx = 0;
         }
 
-        static Vertex *spawnVertexFromPool() {
-            if (vertexPoolIdx >= VertexPool.size()) {
-                Vertex *v = new Vertex();
-                VertexPool.push_back(v);
-                vertexPoolIdx++;
-                return v;
+        // get vertex from pool, create one if not exists
+        static Vertex* spawnVertexFromPool()
+        {
+            if (VertexPoolIdx >= VertexPool.size())
+            {
+                VertexPool.push_back(new Vertex());
+                return VertexPool[VertexPoolIdx++];
             }
 
-            Vertex *v = VertexPool[vertexPoolIdx++];
-            v->reset();
-            return v;
+            // use one in the pool
+            auto vert = VertexPool[VertexPoolIdx++];
+            vert->reset();
+            return vert;
         }
 
-        static Face *spawnFaceFromPool() {
-            if (facePoolIdx >= FacesPool.size()) {
-                FacesPool.push_back(new Face());
-                return FacesPool[facePoolIdx++];
+        // get face from pool, create one if not exists
+        static Face* spawnFaceFromPool()
+        {
+            if (FacePoolIdx >= FacePool.size())
+            {
+                FacePool.push_back(new Face());
+                return FacePool[FacePoolIdx++];
             }
-            auto f = FacesPool[facePoolIdx++];
-            f->reset();
-            return f;
+            auto face = FacePool[FacePoolIdx++];
+            face->reset();
+            return face;
         }
 
-        static void reserveFacePool(int nFace) {
-            if (FacesPool.capacity() < nFace)
-                FacesPool.reserve(nFace);
+        static void reserveFacePool(unsigned int nFace)
+        {
+            if (FacePool.capacity() < nFace)
+            {
+                FacePool.reserve(nFace);
+            }
         }
 
-        static Edge *spawnEdgeFromPool(Vertex *v0, Vertex *v1) {
-            if (EdgesPool.size() > edgePoolIdx) {
-                Edge *e = EdgesPool[edgePoolIdx++];
-                e->updateEdge(v0, v1);
+        static Edge *spawnEdgeFromPool(Vertex *v0, Vertex *v1)
+        {
+            if (EdgePool.size() > EdgePoolIdx)
+            {
+                Edge *e = EdgePool[EdgePoolIdx++];
+                e->update(v0, v1);
                 return e;
             }
-            auto e = new Edge(v0, v1);
-            EdgesPool.push_back(e);
-            edgePoolIdx++;
-            return e;
+
+            auto edge = new Edge(v0, v1);
+            EdgePool.push_back(edge);
+            EdgePoolIdx++;
+            return edge;
         }
 
         // cost = VT * Q * V
-        static double getQuadricCost(const Vec3 &v, const SymetricMatrix &Q) {
+        static double getQuadricCost(const Vec3 &v, const SymetricMatrix &Q)
+        {
             double x = v.X;
             double y = v.Y;
             double z = v.Z;
@@ -567,20 +609,24 @@ namespace {
         }
 
         // priority = cost / (normal * tri_quality)
-        static double computePriority(Edge &e, const double &QuadricCost) {
+        static double computePriority(Edge &e, const double &QuadricCost)
+        {
             const Vec3 &optPos = e.OptPos;
             auto start = e.Start;
             auto end = e.End;
 
             // for each face related to start vertex
             double minQual = 1;
-            for (auto face : start->Neighbors) {
-                if (!face->Valid || face->containVertex(end)) {
+            for (auto face : start->Neighbors)
+            {
+                if (!face->Valid || face->containVertex(end))
+                {
                     continue;
                 }
 
                 double quality = face->computeQuality(start, optPos);
-                if (quality == 0) {
+                if (quality == 0)
+                {
                     minQual = 0;
                     break;
                 }
@@ -589,35 +635,42 @@ namespace {
 
             // for each face related to end vertex
             if (minQual != 0)
-                for (auto face : end->Neighbors) {
-                    if (!face->Valid || face->containVertex(start)) {
+            {
+                for (auto face : end->Neighbors)
+                {
+                    if (!face->Valid || face->containVertex(start))
+                    {
                         continue;
                     }
 
                     double quality = face->computeQuality(end, optPos);
-                    if (quality == 0) {
+                    if (quality == 0)
+                    {
                         minQual = 0;
                         break;
                     }
                     minQual = std::min(minQual, quality);
                 }
+            }
 
-            if (minQual == 0) {
+            if (minQual == 0)
+            {
                 //avoid selection of edge which would cause regression of faces
-                return std::numeric_limits<double>::infinity(); //- std::numeric_limits < double >::max();
+                return std::numeric_limits<double>::infinity();
             }
 
             // cost
             double cost = ScaleFactor * QuadricCost;
-            if (cost <= QUADRIC_EPSILON) {
+            if (cost <= QUADRIC_EPSILON)
+            {
                 cost = -1 / (start->Pos - end->Pos).length();
             }
             cost /= minQual;
             return cost;
         }
 
-        static void calcOptimalPosition(Edge &e, double &cost) {
-
+        static void calcOptimalPosition(Edge &e, double &cost)
+        {
             static const double COST_THRESHOLD = 200.0 * QUADRIC_EPSILON;
             auto start = e.Start;
             auto end = e.End;
@@ -625,9 +678,10 @@ namespace {
             const SymetricMatrix &Q = start->Q + end->Q;
             Vec3 &optPos = e.OptPos;
             optPos = (start->Pos + end->Pos) / 2.0;
-            if (getQuadricCost(optPos, start->Q) + getQuadricCost(optPos, end->Q) >
-                COST_THRESHOLD) {
-                if (!Q.solve(optPos)) {
+            if (getQuadricCost(optPos, start->Q) + getQuadricCost(optPos, end->Q) > COST_THRESHOLD)
+            {
+                if (!Q.solve(optPos))
+                {
                     // calculate the cost
                     const Vec3 &v0 = start->Pos;
                     const Vec3 &v1 = end->Pos;
@@ -638,64 +692,74 @@ namespace {
 
                     double min = std::min(cost0, std::min(cost1, costm));
                     cost = min;
-                    if (min == cost0) {
+                    if (min == cost0)
+                    {
                         optPos = start->Pos;
-                    } else if (min == cost1) {
-                        optPos = end->Pos;
-                    } else {
                     }
+                    else if (min == cost1)
+                    {
+                        optPos = end->Pos;
+                    }
+                    // else use mid point
                     return;
                 }
             }
             cost = getQuadricCost(optPos, Q);
             return;
-
         }
 
-        static void solveFaceOptimized(Face &face) {
+        static void solve(Face &face)
+        {
             double min = std::numeric_limits<double>::max();
-            for (unsigned int j = 0; j < 3; ++j) {
-                Edge *e = face.ConsistentEdges[j];
-                if (e->LOCAL_MARK < GLOBAL_MARK) {
+            for (unsigned int j = 0; j < 3; ++j)
+            {
+                Edge *e = face.Edges[j];
+                if (e->LOCAL_MARK < GLOBAL_MARK)
+                {
+                    // need to update if edge LOCAL_MARK is less than vertex LOCAL_MARK
                     if (e->LOCAL_MARK <= e->Start->LOCAL_MARK ||
-                        e->LOCAL_MARK <= e->End->LOCAL_MARK) {
+                        e->LOCAL_MARK <= e->End->LOCAL_MARK)
+                    {
                         e->LOCAL_MARK = GLOBAL_MARK;
                         calcOptimalPosition(*e, e->Priority);
                     }
                 }
-                if (e->Priority < min) {
+                if (e->Priority < min)
+                {
                     face.OptEdge = j;
                     min = e->Priority;
                 }
             }
-            face.priority = face.ConsistentEdges[face.OptEdge]->Priority;
+            face.priority = face.Edges[face.OptEdge]->Priority;
         }
 
-        static void solve(Edge &edge) {
-            edge.Priority = solveEdgePriority(edge);
-
-        }
-
-        inline static double solveEdgePriority(Edge &edge) {
-            if (edge.Start->Pos == edge.End->Pos) {
+        static void solve(Edge &edge)
+        {
+            if (edge.Start->Pos == edge.End->Pos)
+            {
                 edge.OptPos = edge.Start->Pos;
-                return -std::numeric_limits<double>::infinity();
+                edge.Priority = -std::numeric_limits<double>::infinity();
             }
 
             double cost = 0.0;
             calcOptimalPosition(edge, cost);
-            return computePriority(edge, cost);
+            edge.Priority = computePriority(edge, cost);
         }
 
-        static bool flipped(Vertex *start, Vertex *end, const Vec3 &optPos) {
-            if (optPos == start->Pos) {
+        static bool flipped(Vertex *start, Vertex *end, const Vec3 &optPos)
+        {
+            if (optPos == start->Pos)
+            {
                 return false;
             }
-            for (auto neighbor : start->Neighbors) {
-                if (!neighbor->Valid) {
+            for (auto neighbor : start->Neighbors)
+            {
+                if (!neighbor->Valid)
+                {
                     continue;
                 }
-                if (neighbor->containVertex(end)) {
+                if (neighbor->containVertex(end))
+                {
                     continue;
                 }
 
@@ -710,75 +774,35 @@ namespace {
                 }
 
                 const Vec3 &unitNormal = (d1.cross(d2)).normalize();
-                if (unitNormal.dot(neighbor->normal().normalize()) < NORMAL_TOLERANCE) {
+                if (unitNormal.dot(neighbor->normal().normalize()) < NORMAL_TOLERANCE)
+                {
                     return true;
                 }
             }
             return false;
         }
 
-        static int SwapToBack(std::vector<Face *> &Neighbors, int idx, int v0Size) {
-            int bIdx = v0Size - 1;
-            for (; bIdx > idx; --bIdx) {
-                if (Neighbors[bIdx]->Valid) {
-                    Neighbors[idx] = Neighbors[bIdx];
-                    return bIdx;
+        static void removeInvalidFace(std::list<Face *> &faces)
+        {
+            for (auto iter = faces.begin(); iter != faces.end(); ++iter)
+            {
+                if (!(*iter)->Valid)
+                {
+                    faces.erase(iter);
                 }
             }
-            return bIdx;
         }
 
-        static void UnorderedSwapInvalidFace(std::vector<Face *> &InputFaces) {
-
-            if (InputFaces.size() == 0) return;
-            int frontIdx = 0;
-            int backIdx = InputFaces.size() - 1;
-            for (; frontIdx <= backIdx; ++frontIdx) {
-                auto e = InputFaces[frontIdx];
-                if (e->Valid == false) {
-                    bool swap = false;
-                    for (; backIdx > frontIdx; --backIdx) {
-                        if (InputFaces[backIdx]->Valid) {
-                            InputFaces[frontIdx] = InputFaces[backIdx];
-                            InputFaces[backIdx] = e;
-                            backIdx--;
-                            swap = true;
-                            break;
-                        }
-                    }
-                    if (swap == false) break;
-                }
-            }
-            frontIdx = std::min(frontIdx, backIdx);
-            if (InputFaces[frontIdx]->Valid) {
-
-                InputFaces.resize(frontIdx + 1);
-            } else
-                InputFaces.resize(frontIdx);
-
-        }
-
-        static unsigned int update(Face &face) {
-
+        static unsigned int update(Face &face)
+        {
             // get vertices
             Vertex *v0 = face.Vertices[face.OptEdge];
             Vertex *v1 = face.Vertices[(face.OptEdge + 1) % 3];
 
-            Vec3 &optPos = face.ConsistentEdges[face.OptEdge]->OptPos;
-            face.Valid = false; //assume the remove of this face would be successfully
-
-            if (flipped(v0, v1, optPos) || flipped(v1, v0, optPos)) {
-                face.Valid = true; //due to flip, the face remove is reverted..
-                // this would means the face would be flipped. no point to try flip again
-                //face.LOCAL_MARK = GLOBAL_MARK + 100000;
+            Vec3 &optPos = face.Edges[face.OptEdge]->OptPos;
+            if (flipped(v0, v1, optPos) || flipped(v1, v0, optPos))
+            {
                 return 0;
-            }
-            //prefer to use the one with larger capacity
-            if (v0->Neighbors.capacity() < v1->Neighbors.capacity()) {
-                //swap
-                auto temp = v0;
-                v0 = v1;
-                v1 = temp;
             }
 
             GLOBAL_MARK++;
@@ -793,51 +817,56 @@ namespace {
             v0->LOCAL_MARK = GLOBAL_MARK;
 
             // update v1 faces
-            unsigned int nDeleted = 1; //surely face would be invalid. already set valid to false.
-            face.markV2V1ReplacedByV2V0(v0, v1);
-
-            for (auto f : v1->Neighbors) {
-                if (!f->Valid) {
+            unsigned int nDeleted = 0;
+            for (auto f : v1->Neighbors)
+            {
+                if (!f->Valid)
+                {
                     continue;
                 }
+
                 // try to remove the face
-                if (f->containVertex(v0)) {
+                if (f->containVertex(v0))
+                {
                     nDeleted++;
                     f->Valid = false;
-                    f->markV2V1ReplacedByV2V0(v0, v1);
+                    f->replaceEdge(v0, v1);
                 }
             }
 
-            UnorderedSwapInvalidFace(v0->Neighbors);
-            for (auto f : v1->Neighbors) {
-                if (!f->Valid) {
+            // remove invalid face of v0's neighbors
+            removeInvalidFace(v0->Neighbors);
+
+            // replace v1's neighbors by ToBeReplaced edge
+            for (auto f : v1->Neighbors)
+            {
+                if (!f->Valid)
+                {
                     continue;
                 }
 
-                f->replaceKeepTopology(v1, v0);
-                f->replaceDuplicateEdge();
+                f->replace(v1, v0);
+                f->replaceDuplicatedEdge();
 
                 // add to v0
                 v0->Neighbors.push_back(f);
             }
-            v1->Neighbors.clear();
 
+            // increase GLOBAL_MARK to update the faces
             GLOBAL_MARK++;
-            //it has been validated that cache would take effect.
-            //sometime there would be same triangle with diff index
-            //which would make the num of cal edge work < v0->neighbors.size();
-            for (auto f : v0->Neighbors) {
+            for (auto f : v0->Neighbors)
+            {
                 // mark face as dirty
                 f->LOCAL_MARK = GLOBAL_MARK;
 
                 // update
-                CollapseHelper::solveFaceOptimized(*f);
+                CollapseHelper::solve(*f);
             }
             return nDeleted;
         }
 
-        static unsigned int
-        updateEdge(MinEdgeHeap &heap, Edge &edge, std::vector<Edge *> &EdgeCache) {
+        static unsigned int updateEdge(EdgeHeap &heap, Edge &edge, std::vector<Edge *> &EdgeCache)
+        {
             // update global mark
             GLOBAL_MARK++;
 
@@ -846,97 +875,110 @@ namespace {
             Vertex *v1 = edge.End;
 
             //prefer to use the one with larger capacity
-            if (v0->Neighbors.capacity() < v1->Neighbors.capacity()) {
-                //swap
-                auto temp = v0;
-                v0 = v1;
-                v1 = temp;
-            }
             v1->Removed = true;
+
             // update v1 faces
             unsigned int nDeleted = 0;
-            //v1->Neighbors.erase(iter);
-            for (auto f : v1->Neighbors) {
-                if (!f->Valid) {
+            for (auto f : v1->Neighbors)
+            {
+                if (!f->Valid)
+                {
                     continue;
                 }
                 // remove the face
-                if (f->containVertex(v0)) {
+                if (f->containVertex(v0))
+                {
                     // set face as invalid
                     f->Valid = false;
 
-                    auto v2v1 = f->GetV2V1ReplacedByV2V0(v0, v1);
-                    if (v2v1->HeapIndex != -2) {
-                        heap.deleteEdge(v2v1); //if not deleted
+                    // get another edge connected to v1, then remove it.
+                    auto v2v1 = f->replaceEdge(v0, v1);
+                    if (v2v1->HeapIndex != -2)
+                    {
+                        heap.pop(v2v1);
                     }
                     nDeleted++;
                     continue;
                 }
             }
-            UnorderedSwapInvalidFace(v0->Neighbors);
-            for (auto f : v1->Neighbors) {
-                if (!(f)->Valid) {
+
+            // remove invalid face of v0's neighbors
+            removeInvalidFace(v0->Neighbors);
+
+            // update v0 neighbors
+            for (auto f : v1->Neighbors)
+            {
+                if (!(f)->Valid)
+                {
                     continue;
                 }
 
                 // replace
-                f->replaceKeepTopology(v1, v0);
-                f->replaceDuplicateEdge();
+                f->replace(v1, v0);
+                f->replaceDuplicatedEdge();
                 v0->Neighbors.push_back(f);
-
             }
-            v1->Neighbors.clear();
-            UnorderedSwapInvalidFace(v0->Neighbors);
-            if (v0->Neighbors.size() == 0) {
-                //std::cout << "remove useless vertices" << std::endl;
+
+            // return if v0 is an isolated vertex
+            if (v0->Neighbors.size() == 0)
+            {
                 v0->Removed = true;
                 return nDeleted;
             }
+
             // use v0 to store new vertex
             v0->Pos = edge.OptPos;
             v0->LOCAL_MARK = GLOBAL_MARK;
-            EdgeCache.clear();
-
             v0->Q += v1->Q;
+
             Edge *e1 = nullptr;
             Edge *e2 = nullptr;
-
-            for (auto f : v0->Neighbors) {
-                f->GetEdgesByVertex(v0, e1, e2);
+            EdgeCache.clear();
+            for (auto f : v0->Neighbors)
+            {
+                f->getEdges(v0, e1, e2);
                 syncIntoEdgeCache(e1, v0, EdgeCache);
                 syncIntoEdgeCache(e2, v0, EdgeCache);
-                if (e1->toBeReplaced != nullptr || e2->toBeReplaced != nullptr) {
-                    f->replaceDuplicateEdge();
+                if (e1->ToBeReplaced != nullptr || e2->ToBeReplaced != nullptr)
+                {
+                    f->replaceDuplicatedEdge();
                 }
             }
-            for (auto e : EdgeCache) {
-                if (e->toBeReplaced != nullptr) {
-                    heap.deleteEdge(e);
-                } else {
-                    double priority = solveEdgePriority(*e);
-                    heap.updateHeapEdgePriority(e, priority);
-                    e->Start->toUpdateEdge = nullptr;
+            for (auto e : EdgeCache)
+            {
+                if (e->ToBeReplaced != nullptr)
+                {
+                    heap.pop(e);
+                }
+                else
+                {
+                    double old_priority = e->Priority;
+                    solve(*e);
+                    heap.update(e, old_priority);
+                    e->Start->ToUpdateEdge = nullptr;
                 }
             }
             v1->Neighbors.clear();
             return nDeleted;
         }
 
-
-    private:
-
-        static void syncIntoEdgeCache(Edge *e1, Vertex *v0, std::vector<Edge *> &EdgeCache) {
-            if (e1->Start == v0) {
-                e1->Start = e1->End;
-                e1->End = v0;
+        static void syncIntoEdgeCache(Edge *e1, Vertex *v0, std::vector<Edge *> &EdgeCache)
+        {
+            // force to be same topology
+            if (e1->Start == v0)
+            {
+                std::swap(e1->Start, e1->End);
             }
 
-
-            if (e1->LOCAL_MARK != GLOBAL_MARK) {
-                if (e1->Start->toUpdateEdge != nullptr && e1->Start->toUpdateEdge != e1) {
-                    e1->toBeReplaced = e1->Start->toUpdateEdge;
-                } else {
-                    e1->Start->toUpdateEdge = e1;
+            if (e1->LOCAL_MARK != GLOBAL_MARK)
+            {
+                if (e1->Start->ToUpdateEdge != nullptr && e1->Start->ToUpdateEdge != e1)
+                {
+                    e1->ToBeReplaced = e1->Start->ToUpdateEdge;
+                }
+                else
+                {
+                    e1->Start->ToUpdateEdge = e1;
                 }
                 e1->LOCAL_MARK = GLOBAL_MARK;
                 EdgeCache.push_back(e1);
@@ -944,81 +986,63 @@ namespace {
         }
     };
 
+    // data section
     unsigned int CollapseHelper::GLOBAL_MARK = 0;
     double CollapseHelper::ScaleFactor = 1.0;
-    SymetricMatrix CollapseHelper::tempQ;
 
-    std::vector<Face *> CollapseHelper::FacesPool;
-    size_t CollapseHelper::facePoolIdx = 0;
+    std::vector<Face *> CollapseHelper::FacePool;
+    uint32_t CollapseHelper::FacePoolIdx = 0;
 
-    std::vector<Edge *> CollapseHelper::EdgesPool;
-    size_t CollapseHelper::edgePoolIdx = 0;
-
+    std::vector<Edge *> CollapseHelper::EdgePool;
+    uint32_t CollapseHelper::EdgePoolIdx = 0;
 
     std::vector<Vertex *> CollapseHelper::VertexPool;
-    size_t CollapseHelper::vertexPoolIdx = 0;
+    uint32_t CollapseHelper::VertexPoolIdx = 0;
 
     class MeshReducerPrivate {
     public:
         MeshReducerPrivate();
-
         ~MeshReducerPrivate();
 
         void reset();
-
         void reduce(unsigned int nTarget, bool bForceStrict = false);
 
         void load(const double *vertices, const uint16_t *indices, unsigned int nVert,
                   unsigned int nInd);
-
         void store(std::vector<double> &vertices, std::vector<uint16_t> &indices);
 
         bool isManifoldMesh() const;
-
         bool isValid() const;
-
-        //Edge * spawnEdgeFromPool(Vertex * v0, Vertex * v1);
     private:
-        class DuplicateVertexCmp {
+        class DuplicateVertexCmp
+        {
         public:
-            inline bool operator()(Vertex *const &rhs, Vertex *const &lhs) {
+            inline bool operator()(Vertex *const &rhs, Vertex *const &lhs)
+            {
                 {
                     return (rhs->Pos < lhs->Pos);
                 }
-                //            return (rhs->Pos == lhs->Pos ? (rhs < lhs) : (rhs->Pos < lhs->Pos));
             }
         };
 
-
         Edge *buildEdge(Vertex *v0, Vertex *v1);
-
         void buildQuadricMatrix();
-
         void initCollapses();
 
         void doFastLoop(unsigned int nTarget);
-
         void doStrictLoop(unsigned int nTarget);
 
         void cleanUp();
-
-        std::vector<Vertex *> pVecResult;
-        int validFaceNum = 0;
     private:
-        // non-manifold ratio
+        // non-manifold
         bool m_bStrictConstraint = false;
 
         // data section
         std::vector<Vertex *> Vertices;
         std::vector<Face *> Faces;
 
-        std::vector<Vec3> EdgeOptList;
-        std::vector<Vec3> EdgeDefaultList;
-
-
         // build edge for border setup
         std::unordered_map<uint32_t, Edge *> EdgeMap;
-
 
         std::vector<Edge *> Edges;
         std::vector<Edge *> EdgeCache;
@@ -1026,21 +1050,24 @@ namespace {
         // Bounding box
         Vec3 OriginBBoxMin;
         Vec3 OriginBBoxMax;
+
+        // Results
+        std::vector<Vertex *> Results;
+        int validFaceNum = 0;
     };
 
     MeshReducerPrivate::MeshReducerPrivate() {}
 
     MeshReducerPrivate::~MeshReducerPrivate() {}
 
-    void MeshReducerPrivate::reset() {
+    void MeshReducerPrivate::reset()
+    {
         m_bStrictConstraint = false;
         Vertices.clear();
-        //Faces.clear();
         Faces.clear();
-
         EdgeMap.clear();
         Edges.clear();
-        pVecResult.clear();
+        Results.clear();
         CollapseHelper::reset();
     }
 
@@ -1054,9 +1081,12 @@ namespace {
         initCollapses();
 
         // loop
-        if (bForceStrict || m_bStrictConstraint) {
+        if (bForceStrict || m_bStrictConstraint)
+        {
             doStrictLoop(nTarget);
-        } else {
+        }
+        else
+        {
             doFastLoop(nTarget);
         }
 
@@ -1065,10 +1095,11 @@ namespace {
     }
 
     // TODO: CNECO-2636 Find out whether the index type should change to uint32.
-    void
-    MeshReducerPrivate::load(const double *vertices, const uint16_t *indices, unsigned int nVert,
-                             unsigned int nInd) {
-        if (!vertices || !indices || !nVert || !nInd) {
+    void MeshReducerPrivate::load(const double *vertices, const uint16_t *indices, unsigned int nVert,
+                             unsigned int nInd)
+    {
+        if (!vertices || !indices || !nVert || !nInd)
+        {
             return;
         }
 
@@ -1077,16 +1108,16 @@ namespace {
         Vec3 min(std::numeric_limits<double>::max());
         Vec3 max(std::numeric_limits<double>::min());
 
-        int i_vert_idx = 0;
         for (unsigned int i_vert = 0; i_vert < nVert; ++i_vert) {
-            double x = vertices[i_vert_idx++];
-            double y = vertices[i_vert_idx++];
-            double z = vertices[i_vert_idx++];
+            double x = vertices[i_vert * 3 + 0];
+            double y = vertices[i_vert * 3 + 1];
+            double z = vertices[i_vert * 3 + 2];
 
-            auto vertPtrs = CollapseHelper::spawnVertexFromPool();
-            Vertices[i_vert] = vertPtrs;
-            vertPtrs->Pos = Vec3(x, y, z);
-            vertPtrs->ID = i_vert;
+            // get vertex from pool
+            auto vert = CollapseHelper::spawnVertexFromPool();
+            Vertices[i_vert] = vert;
+            vert->Pos = Vec3(x, y, z);
+            vert->ID = i_vert;
 
             // get scale
             min.X = std::min(min.X, x);
@@ -1100,145 +1131,150 @@ namespace {
         }
 
         //CollapseHelper::ScaleFactor = double(1e8 * std::pow(1.0 / double((max - min).length()), 6));
-        CollapseHelper::ScaleFactor = double(
-                1e8 * std::pow(1.0 / double((max - min).squaredLength()), 3));
-
+        CollapseHelper::ScaleFactor = double(1e8 * std::pow(1.0 / double((max - min).squaredLength()), 3));
 
         OriginBBoxMax = max;
         OriginBBoxMin = min;
 
         // build faces
         unsigned int nFace = nInd / 3;
-
         Faces.resize(nFace);
         CollapseHelper::reserveFacePool(nFace);
-        for (unsigned int idx = 0; idx < nFace; ++idx) {
-            Faces[idx] = CollapseHelper::spawnFaceFromPool();
-        }
-
-        int i_face_vertIdx = 0;
-
-
-        for (unsigned int i_face = 0; i_face < nFace; ++i_face) {
-            auto &curr = *Faces[i_face];
-            for (unsigned int j = 0; j < 3; ++j) {
-                curr.Vertices[j] = Vertices[indices[i_face_vertIdx++]];
-                curr.Vertices[j]->Neighbors.push_back(&curr);
+        for (unsigned int idx = 0; idx < nFace; ++idx)
+        {
+            // get face from pool
+            auto face = CollapseHelper::spawnFaceFromPool();
+            Faces[idx] = face;
+            for (unsigned int i_vert = 0; i_vert < 3; ++i_vert)
+            {
+                face->Vertices[i_vert] = Vertices[indices[idx * 3 + i_vert]];
+                face->Vertices[i_vert]->Neighbors.push_back(face);
             }
 
-            for (unsigned int j = 0; j < 3; ++j) {
-                Vertex *v0 = curr.Vertices[j];
-                Vertex *v1 = curr.Vertices[(j + 1) % 3];
+            for (unsigned int i_vert = 0; i_vert < 3; ++i_vert)
+            {
+                Vertex *v0 = face->Vertices[i_vert];
+                Vertex *v1 = face->Vertices[(i_vert + 1) % 3];
 
                 Edge *e = buildEdge(v0, v1);
                 if (e != nullptr)
+                {
                     e->AdjFaces++;
-                curr.ConsistentEdges[j] = e;
+                }
+                face->Edges[i_vert] = e;
             }
         }
 
         // manifold or non-manifold
         unsigned int nonManiEdge = 0;
-        for (auto edge : Edges) {
-            if (edge->AdjFaces == 1) {
+        for (auto edge : Edges)
+        {
+            if (edge->AdjFaces == 1)
+            {
                 m_bStrictConstraint = true;
                 break;
             }
         }
     }
 
-    void MeshReducerPrivate::store(std::vector<double> &vertices, std::vector<uint16_t> &indices) {
-        int valid_Vertex_Num = 0;
-        for (auto &vertPtr : pVecResult) //scan pVec only to get rid of removed vertex
+    void MeshReducerPrivate::store(std::vector<double> &vertices, std::vector<uint16_t> &indices)
+    {
+        unsigned int nValid = 0;
+        for (auto &vert : Results) //scan pVec only to get rid of removed vertex
         {
-            if (vertPtr->Removed) continue;
-            valid_Vertex_Num++;
+            if (vert->Removed)
+            {
+                continue;
+            }
+            nValid++;
         }
 
-        vertices.resize(valid_Vertex_Num * 3);
+        vertices.resize(nValid * 3);
         unsigned int i_valid = 0;
-
-        int vIdx = 0;
-        for (auto &vert : pVecResult) {
-            if (vert->Removed) {
+        for (auto &vert : Results)
+        {
+            if (vert->Removed)
+            {
                 continue;
             }
 
+            vertices[i_valid * 3 + 0] = vert->Pos.X;
+            vertices[i_valid * 3 + 1] = vert->Pos.Y;
+            vertices[i_valid * 3 + 2] = vert->Pos.Z;
             vert->ID = i_valid++;
-            vertices[vIdx++] = vert->Pos.X;
-            vertices[vIdx++] = vert->Pos.Y;
-            vertices[vIdx++] = vert->Pos.Z;
         }
 
 
         indices.resize(this->validFaceNum * 3);
         int faceIndex = 0;
         for (auto face : Faces) {
-            if (face->Valid == false) continue;
-            indices[faceIndex++] = pVecResult[face->Vertices[0]->LOCAL_MARK]->ID;
-            indices[faceIndex++] = pVecResult[face->Vertices[1]->LOCAL_MARK]->ID;
-            indices[faceIndex++] = pVecResult[face->Vertices[2]->LOCAL_MARK]->ID;
+            if (face->Valid == false)
+            {
+                continue;
+            }
+            indices[faceIndex++] = Results[face->Vertices[0]->LOCAL_MARK]->ID;
+            indices[faceIndex++] = Results[face->Vertices[1]->LOCAL_MARK]->ID;
+            indices[faceIndex++] = Results[face->Vertices[2]->LOCAL_MARK]->ID;
         }
-
     }
 
-    bool MeshReducerPrivate::isManifoldMesh() const {
+    bool MeshReducerPrivate::isManifoldMesh() const
+    {
         return m_bStrictConstraint;
     }
 
-
-    Edge *MeshReducerPrivate::buildEdge(Vertex *v0, Vertex *v1) {
+    Edge *MeshReducerPrivate::buildEdge(Vertex *v0, Vertex *v1)
+    {
         // find first
-        uint32_t key =
-                v0->ID < v1->ID ? (uint32_t(v0->ID) << 16) | v1->ID : (uint32_t(v1->ID) << 16) |
-                                                                      v0->ID;
-        if (EdgeMap.find(key) != EdgeMap.end()) {
-            auto e = EdgeMap[key];
-            if (e != nullptr) {
-                return e;
-            } else {
-                std::cout << "h" << std::endl;
-            }
+        uint32_t key = v0->ID < v1->ID ? ((uint32_t(v0->ID) << 16) | v1->ID) :
+                       ((uint32_t(v1->ID) << 16) | v0->ID);
+        if (EdgeMap.find(key) != EdgeMap.end())
+        {
+            return EdgeMap[key];
         }
 
-        auto e = CollapseHelper::spawnEdgeFromPool(v0, v1);
-        Edges.push_back(e);// .emplace_back(v0, v1);
-        EdgeMap[key] = e;
-        return e;
+        auto edge = CollapseHelper::spawnEdgeFromPool(v0, v1);
+        Edges.push_back(edge);
+        EdgeMap[key] = edge;
+        return edge;
     }
 
-    void MeshReducerPrivate::buildQuadricMatrix() {
-
-        for (auto &face : Faces) {
+    void MeshReducerPrivate::buildQuadricMatrix()
+    {
+        for (auto &face : Faces)
+        {
             // ax + by + cz + d = 0
             Vec3 normal = face->normal();
-            if (!m_bStrictConstraint) {
+            if (!m_bStrictConstraint)
+            {
                 normal = normal.normalize();
             }
 
             double d = -normal.dot(face->Vertices[0]->Pos);
-
             // assemble quadric matrix
             SymetricMatrix Q(normal.X, normal.Y, normal.Z, d);
-            for (int i = 0; i < 3; ++i) {
+            for (int i = 0; i < 3; ++i)
+            {
                 face->Vertices[i]->Q += Q;
             }
         }
 
-        if (m_bStrictConstraint) {
-            //int edgeSize = Edges.size();
-            int faceSize = Faces.size();
-            for (int fidx = 0; fidx < faceSize; fidx++) {
-                auto &face = *Faces[fidx];
-                if (face.ConsistentEdges[0]->AdjFaces != 1 &&
-                    face.ConsistentEdges[1]->AdjFaces != 1 &&
-                    face.ConsistentEdges[2]->AdjFaces != 1)
-                    continue;;
-                Vec3 normal = face.normal();
-                for (unsigned int j = 0; j < 3; ++j) {
-                    if (face.ConsistentEdges[j]->AdjFaces == 1) {
-                        Vertex *start = face.Vertices[j];
-                        Vertex *end = face.Vertices[(j + 1) % 3];
+        if (m_bStrictConstraint)
+        {
+            for (auto &face : Faces)
+            {
+                if (face->Edges[0]->AdjFaces != 1 && face->Edges[1]->AdjFaces != 1 && face->Edges[2]->AdjFaces != 1)
+                {
+                    continue;
+                }
+
+                Vec3 normal = face->normal();
+                for (unsigned int j = 0; j < 3; ++j)
+                {
+                    if (face->Edges[j]->AdjFaces == 1)
+                    {
+                        Vertex *start = face->Vertices[j];
+                        Vertex *end = face->Vertices[(j + 1) % 3];
 
                         const Vec3 &pStart = start->Pos;
                         const Vec3 &pEnd = end->Pos;
@@ -1256,55 +1292,60 @@ namespace {
         }
     }
 
-    void MeshReducerPrivate::initCollapses() {
-        if (m_bStrictConstraint) {
-            for (auto &edge : Edges) {
+    void MeshReducerPrivate::initCollapses()
+    {
+        if (m_bStrictConstraint)
+        {
+            for (auto &edge : Edges)
+            {
                 CollapseHelper::solve(*edge);
             }
-        } else {
+        }
+        else
+        {
             CollapseHelper::GLOBAL_MARK++;
-            for (auto &face : Faces) {
-                CollapseHelper::solveFaceOptimized(*face);
+            for (auto &face : Faces)
+            {
+                CollapseHelper::solve(*face);
             }
         }
     }
 
-    void MeshReducerPrivate::doFastLoop(unsigned int nTarget) {
+    void MeshReducerPrivate::doFastLoop(unsigned int nTarget)
+    {
         unsigned int faceCount = static_cast < unsigned int> (Faces.size());
         unsigned int nowCount = faceCount;
 
         double minPriority = std::numeric_limits<double>::max();
+        for (auto &face : Faces)
         {
-            for (auto &face : Faces) {
-                double d = face->priority;
-                if (d < minPriority) {
-                    minPriority = d;
-                }
+            double priority = face->priority;
+            if (priority < minPriority)
+            {
+                minPriority = priority;
             }
         }
-        int removedCount = 0;
-        for (unsigned int iter = 0; iter < MAX_ITERATION; ++iter) {
-            if (nowCount <= nTarget) {
-                //std::cout << "Operation end at iter " << iter << std::endl;
+
+        for (unsigned int iter = 0; iter < MAX_ITERATION; ++iter)
+        {
+            if (nowCount <= nTarget)
+            {
                 break;
             }
 
-            //std::cout << "Operation at iter " << iter << std::endl;
             double threshold = 1e-9 * static_cast<double>(std::pow(iter + 3, AGGRESSIVE));
-
+            if (threshold <= minPriority)
             {
-                if (threshold <= minPriority) {
-                    continue;
-                }
+                continue;
             }
-            //std::cout << "threshold " << threshold << std::endl;
-            int start_mark = CollapseHelper::GLOBAL_MARK;
+
             int deletePerRound = 0;
-            int bubleCount = 0;
-            int startMark = CollapseHelper::GLOBAL_MARK;
-            for (auto &face : Faces) {
+            int currGlobalMark = CollapseHelper::GLOBAL_MARK;
+            for (auto &face : Faces)
+            {
                 // get the top heap element
-                if (!face->Valid || face->LOCAL_MARK > startMark || face->priority > threshold) {
+                if (!face->Valid || face->LOCAL_MARK > currGlobalMark || face->priority > threshold)
+                {
                     continue;
                 }
 
@@ -1313,26 +1354,23 @@ namespace {
                 deletePerRound += nDeleted;
 
                 nowCount -= nDeleted;
-                if (nowCount <= nTarget) {
+                if (nowCount <= nTarget)
+                {
                     break;
                 }
             }
 
-
-            if (nowCount > nTarget && deletePerRound > 0) {
-                bubleCount += deletePerRound;
-                //here I would just bubble out invalid faces
-                if (bubleCount > Faces.size() >> 2 && bubleCount > 100) { //1/4 bubble which is bad
-                    //CollapseHelper::UnorderedSwapInvalidFace(Faces);
-                    bubleCount = 0;
-                }
+            if (nowCount > nTarget && deletePerRound > 0)
+            {
+                // update minimal priority
                 minPriority = std::numeric_limits<double>::max();
-                // clear dirty flag
-                for (auto &face : Faces) {
-                    //face->Dirty = false;
-                    if (face->Valid) {
+                for (auto &face : Faces)
+                {
+                    if (face->Valid)
+                    {
                         double d = face->priority;
-                        if (d < minPriority) {
+                        if (d < minPriority)
+                        {
                             minPriority = d;
                         }
                     }
@@ -1341,33 +1379,34 @@ namespace {
         }
     }
 
-    void MeshReducerPrivate::doStrictLoop(unsigned int nTarget) {
-        unsigned int faceCount = static_cast < unsigned int> (Faces.size());
+    void MeshReducerPrivate::doStrictLoop(unsigned int nTarget)
+    {
+        unsigned int faceCount = static_cast<unsigned int>(Faces.size());
         unsigned int nowCount = faceCount;
-        MinEdgeHeap heap(Edges);
+        EdgeHeap heap(Edges);
 
         // clock
         auto start = std::chrono::steady_clock::now();
-        auto end = start;// std::chrono::steady_clock::now();
+        auto end = start;
 
         int loopRound = 0;
-        ////int first10 = 10000;
         // collapse in loop
-        while ((nowCount > nTarget) && heap.size != 0 &&
-               std::chrono::duration_cast<std::chrono::seconds>(end - start).count() < TIMEOUT) {
-            Edge &top = *heap.extractMin();
-
+        while ((nowCount > nTarget) && heap.Length != 0 &&
+               std::chrono::duration_cast<std::chrono::seconds>(end - start).count() < TIMEOUT)
+        {
+            // get top element
+            Edge &top = *heap.top();
 
             if (top.Start->Removed || top.End->Removed ||
-                top.LOCAL_MARK < top.Start->LOCAL_MARK || top.LOCAL_MARK < top.End->LOCAL_MARK) {
-                //here means that isolated edges exist, all faces are not valid
-                //this is the interest part. as we could find many corner cases
+                top.LOCAL_MARK < top.Start->LOCAL_MARK || top.LOCAL_MARK < top.End->LOCAL_MARK)
+            {
                 continue;
             }
 
             // update time
             loopRound++;
-            if (loopRound & 1) {
+            if (loopRound & 1)
+            {
                 end = std::chrono::steady_clock::now();
             }
             // update
@@ -1376,104 +1415,118 @@ namespace {
         }
     }
 
-    void MeshReducerPrivate::cleanUp() {
-
-        std::vector<Vertex *> &pVec = pVecResult;
-        pVec.clear();
+    void MeshReducerPrivate::cleanUp()
+    {
+        Results.clear();
         validFaceNum = 0;
 
-        int valid_Vertex_Num = 0;
-        for (auto &vertPtr : Vertices) {
-            if (vertPtr->Removed) continue;
-            valid_Vertex_Num++;
+        int nValidVert = 0;
+        for (auto &vert : Vertices)
+        {
+            if (vert->Removed)
+            {
+                continue;
+            }
+            nValidVert++;
         }
-        if (valid_Vertex_Num == 0) {
+
+        // return if no valid vertex
+        if (nValidVert == 0)
+        {
             return;
         }
-        pVec.resize(valid_Vertex_Num);
-        unsigned int i_valid = 0;
-        for (auto &vertPtr : Vertices) {
-            auto &vert = *vertPtr;
-            if (vert.Removed) continue;
-            pVec[i_valid++] = &vert;
-        }
-        DuplicateVertexCmp cmp;
-        std::sort(pVec.begin(), pVec.end(), cmp);
 
+        Results.resize(nValidVert);
+        unsigned int i_valid = 0;
+        for (auto &vert : Vertices)
+        {
+            if (vert->Removed)
+            {
+                continue;
+            }
+            Results[i_valid++] = vert;
+        }
+
+        DuplicateVertexCmp cmp;
+        std::sort(Results.begin(), Results.end(), cmp);
+
+        // remove duplicated vertex
         unsigned int j = 0;
         unsigned int i = 1;
         unsigned int nDeleted = 0;
-        for (; i != i_valid;) {
-            pVec[i]->Removed = true;
-            if (pVec[i]->Pos == pVec[j]->Pos) {
-                pVec[i]->LOCAL_MARK = j; //the index in pVec
+        for (; i != i_valid;)
+        {
+            Results[i]->Removed = true;
+            if (Results[i]->Pos == Results[j]->Pos)
+            {
+                Results[i]->LOCAL_MARK = j;
                 i++;
                 nDeleted++;
-            } else {
-                pVec[i]->LOCAL_MARK = i;
+            }
+            else
+            {
+                Results[i]->LOCAL_MARK = i;
                 j = i;
                 ++i;
             }
         }
-        pVec[0]->LOCAL_MARK = 0;
-        pVec[0]->Removed = true;
-        //std::cout << "V2 remove duplicate " << nDeleted << std::endl;
-        //****************************************************************8
 
-        for (auto &face : Faces) //all face valid here
+        Results[0]->LOCAL_MARK = 0;
+        Results[0]->Removed = true;
+
+        // remove face out of range area
+        // if share same vertex id, means face invalid
+        for (auto &face : Faces)
         {
-            if (face->Valid == false) continue;
-
-            auto v0 = face->Vertices[0];// ->Pos;
-            auto v1 = face->Vertices[1];//->Pos;
-            auto v2 = face->Vertices[2];//->Pos;
-
-            if (v0->LOCAL_MARK == v1->LOCAL_MARK ||
-                v0->LOCAL_MARK == v2->LOCAL_MARK ||
-                v1->LOCAL_MARK == v2->LOCAL_MARK) {
-                face->Valid = false; //if share same vertex id, means face invalid.. Equivalent to original removeFaceOutOfRangeArea
+            if (face->Valid == false)
+            {
                 continue;
             }
 
+            auto v0 = face->Vertices[0];
+            auto v1 = face->Vertices[1];
+            auto v2 = face->Vertices[2];
+            if (v0->LOCAL_MARK == v1->LOCAL_MARK || v0->LOCAL_MARK == v2->LOCAL_MARK || v1->LOCAL_MARK == v2->LOCAL_MARK)
             {
-                validFaceNum++;
-
-                //following equivalent to removeUnreferenceVertex by set the correct Remove..
-                pVec[v0->LOCAL_MARK]->Removed = false;
-                pVec[v1->LOCAL_MARK]->Removed = false;
-                pVec[v2->LOCAL_MARK]->Removed = false;
+                face->Valid = false;
+                continue;
             }
+            validFaceNum++;
+            Results[v0->LOCAL_MARK]->Removed = false;
+            Results[v1->LOCAL_MARK]->Removed = false;
+            Results[v2->LOCAL_MARK]->Removed = false;
         }
     }
 
-    bool MeshReducerPrivate::isValid() const {
+    bool MeshReducerPrivate::isValid() const
+    {
+
         Vec3 min(std::numeric_limits<double>::max());
         Vec3 max(std::numeric_limits<double>::min());
-        for (auto vertPtr : Vertices) {
-            auto &vert = *vertPtr;
-            if (vert.Removed) {
+        for (auto vert : Vertices)
+        {
+            if (vert->Removed)
+            {
                 continue;
             }
 
             // get scale
-            min.X = std::min(min.X, vert.Pos.X);
-            max.X = std::max(max.X, vert.Pos.X);
+            min.X = std::min(min.X, vert->Pos.X);
+            max.X = std::max(max.X, vert->Pos.X);
 
-            min.Y = std::min(min.Y, vert.Pos.Y);
-            max.Y = std::max(max.Y, vert.Pos.Y);
+            min.Y = std::min(min.Y, vert->Pos.Y);
+            max.Y = std::max(max.Y, vert->Pos.Y);
 
-            min.Z = std::min(min.Z, vert.Pos.Z);
-            max.Z = std::max(max.Z, vert.Pos.Z);
+            min.Z = std::min(min.Z, vert->Pos.Z);
+            max.Z = std::max(max.Z, vert->Pos.Z);
         }
 
         double len_diag = (max - min).squaredLength();
         double len_diag_old = (OriginBBoxMax - OriginBBoxMin).squaredLength();
 
-        static const double VALID_THRESHOLD_SQUARE = VALID_THRESHOLD * VALID_THRESHOLD;
-
         double minDiag = std::min(len_diag, len_diag_old);
         double maxDiag = std::max(len_diag, len_diag_old);
-        return minDiag > VALID_THRESHOLD_SQUARE * maxDiag;
+        return minDiag > VALID_THRESHOLD * maxDiag;
     }
 } // namespace
 
@@ -1483,16 +1536,19 @@ namespace common {
                              unsigned int nIdx,
                              std::vector<double> &reducedVertices,
                              std::vector<uint16_t> &reducedIndices,
-                             unsigned int nTarget) {
-        if (vertices == nullptr || indices == nullptr || nVert == 0 || nIdx == 0 || nTarget == 0) {
+                             unsigned int nTarget)
+    {
+        if (vertices == nullptr || indices == nullptr || nVert == 0 || nIdx == 0 || nTarget == 0)
+        {
             return false;
         }
-        reducer.reset();
 
-        reducer.load(vertices, indices, nVert, nIdx); //load take 1/3 of total time
-        reducer.reduce(nTarget);        //take 2/3 of total time
+        reducer.reset();
+        reducer.load(vertices, indices, nVert, nIdx);
+        reducer.reduce(nTarget);
         bool bValid = reducer.isValid();
-        if (!bValid && !reducer.isManifoldMesh()) {
+        if (!bValid && !reducer.isManifoldMesh())
+        {
             // do again if the result is invalid and the mesh is non-manifold
             // force to go through the strict route
             reducer.reset();
@@ -1503,5 +1559,5 @@ namespace common {
         reducer.store(reducedVertices, reducedIndices);
         return bValid;
     }
-
 } // namespace common
+                                                                                                                                                                                                                                                                                   
