@@ -44,7 +44,7 @@ bool process(const std::string &file, std::vector<double> &Vertices, std::vector
     unsigned int nVert = Vertices.size() / 3;
     unsigned int nIdx = Indices.size();
     unsigned int nTarget = static_cast<unsigned int>(float(nIdx) / 3.0f * 0.25f);
-    common::MeshReducer::reduce(&Vertices[0], &Indices[0], Vertices.size() / 3, Indices.size(),
+    common::MeshReducer::reduce(&Vertices[0], &Indices[0], nVert, nIdx,
                                 reducedVertices, reducedIndices, nTarget);
     auto stop = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);

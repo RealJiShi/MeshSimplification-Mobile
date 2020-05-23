@@ -54,7 +54,7 @@ namespace {
         SymetricMatrix Q;
 
         // adjacent faces
-        std::list<Face *> Neighbors;
+        std::vector<Face *> Neighbors;
 
         void reset() {
             Neighbors.clear();
@@ -121,11 +121,6 @@ namespace {
             Priority = 0.0;
             HeapIndex = -1;
             ToBeReplaced = nullptr;
-        }
-
-        uint64_t getKey() const
-        {
-            return Start->ID < End->ID ? ((uint64_t(Start->ID) << 32) | End->ID) : ((uint64_t(End->ID) << 32) | Start->ID);
         }
     };
 
@@ -311,7 +306,8 @@ namespace {
         EdgeHeap(std::vector<Edge*> &Edges) : Container(Edges), Length(Edges.size())
         {
             //how to get
-            for (int idx = 1; idx < Length; ++idx) {
+            for (int idx = 1; idx < Length; ++idx)
+            {
                 initElement(idx);
             }
             for (int i = 0; i < Length; ++i)
@@ -782,14 +778,45 @@ namespace {
             return false;
         }
 
-        static void removeInvalidFace(std::list<Face *> &faces)
+        static void removeInvalidFace(std::vector<Face *> &faces)
         {
-            for (auto iter = faces.begin(); iter != faces.end(); ++iter)
+            if (faces.empty())
             {
-                if (!(*iter)->Valid)
+                return;
+            }
+            int frontIdx = 0;
+            int backIdx = faces.size() - 1;
+            for (; frontIdx <= backIdx; ++frontIdx)
+            {
+                auto face = faces[frontIdx];
+                if (face->Valid == false)
                 {
-                    faces.erase(iter);
+                    bool swap = false;
+                    for (; backIdx > frontIdx; --backIdx)
+                    {
+                        if (faces[backIdx]->Valid)
+                        {
+                            faces[frontIdx] = faces[backIdx];
+                            faces[backIdx] = face;
+                            --backIdx;
+                            swap = true;
+                            break;
+                        }
+                    }
+                    if (swap == false)
+                    {
+                        break;
+                    }
                 }
+            }
+            frontIdx = std::min(frontIdx, backIdx);
+            if (faces[frontIdx]->Valid)
+            {
+                faces.resize(frontIdx + 1);
+            }
+            else
+            {
+                faces.resize(frontIdx);
             }
         }
 
@@ -799,10 +826,16 @@ namespace {
             Vertex *v0 = face.Vertices[face.OptEdge];
             Vertex *v1 = face.Vertices[(face.OptEdge + 1) % 3];
 
-            Vec3 &optPos = face.Edges[face.OptEdge]->OptPos;
+            const Vec3 &optPos = face.Edges[face.OptEdge]->OptPos;
             if (flipped(v0, v1, optPos) || flipped(v1, v0, optPos))
             {
                 return 0;
+            }
+
+            //prefer to use the one with larger capacity
+            if (v0->Neighbors.capacity() < v1->Neighbors.capacity())
+            {
+                std::swap(v0, v1);
             }
 
             GLOBAL_MARK++;
@@ -873,6 +906,12 @@ namespace {
             // get vertex
             Vertex *v0 = edge.Start;
             Vertex *v1 = edge.End;
+
+            //prefer to use the one with larger capacity
+            if (v0->Neighbors.capacity() < v1->Neighbors.capacity())
+            {
+                std::swap(v0, v1);
+            }
 
             //prefer to use the one with larger capacity
             v1->Removed = true;
@@ -1053,7 +1092,7 @@ namespace {
 
         // Results
         std::vector<Vertex *> Results;
-        int validFaceNum = 0;
+        int NumOfValidFace = 0;
     };
 
     MeshReducerPrivate::MeshReducerPrivate() {}
@@ -1108,10 +1147,11 @@ namespace {
         Vec3 min(std::numeric_limits<double>::max());
         Vec3 max(std::numeric_limits<double>::min());
 
+        unsigned int vCounter = 0;
         for (unsigned int i_vert = 0; i_vert < nVert; ++i_vert) {
-            double x = vertices[i_vert * 3 + 0];
-            double y = vertices[i_vert * 3 + 1];
-            double z = vertices[i_vert * 3 + 2];
+            double x = vertices[vCounter++];
+            double y = vertices[vCounter++];
+            double z = vertices[vCounter++];
 
             // get vertex from pool
             auto vert = CollapseHelper::spawnVertexFromPool();
@@ -1137,6 +1177,7 @@ namespace {
         OriginBBoxMin = min;
 
         // build faces
+        unsigned int fCounter = 0;
         unsigned int nFace = nInd / 3;
         Faces.resize(nFace);
         CollapseHelper::reserveFacePool(nFace);
@@ -1147,7 +1188,7 @@ namespace {
             Faces[idx] = face;
             for (unsigned int i_vert = 0; i_vert < 3; ++i_vert)
             {
-                face->Vertices[i_vert] = Vertices[indices[idx * 3 + i_vert]];
+                face->Vertices[i_vert] = Vertices[indices[fCounter++]];
                 face->Vertices[i_vert]->Neighbors.push_back(face);
             }
 
@@ -1191,6 +1232,7 @@ namespace {
 
         vertices.resize(nValid * 3);
         unsigned int i_valid = 0;
+        unsigned int vCounter = 0;
         for (auto &vert : Results)
         {
             if (vert->Removed)
@@ -1198,17 +1240,17 @@ namespace {
                 continue;
             }
 
-            vertices[i_valid * 3 + 0] = vert->Pos.X;
-            vertices[i_valid * 3 + 1] = vert->Pos.Y;
-            vertices[i_valid * 3 + 2] = vert->Pos.Z;
+            vertices[vCounter++] = vert->Pos.X;
+            vertices[vCounter++] = vert->Pos.Y;
+            vertices[vCounter++] = vert->Pos.Z;
             vert->ID = i_valid++;
         }
 
 
-        indices.resize(this->validFaceNum * 3);
+        indices.resize(this->NumOfValidFace * 3);
         int faceIndex = 0;
         for (auto face : Faces) {
-            if (face->Valid == false)
+            if (!face->Valid)
             {
                 continue;
             }
@@ -1418,7 +1460,7 @@ namespace {
     void MeshReducerPrivate::cleanUp()
     {
         Results.clear();
-        validFaceNum = 0;
+        NumOfValidFace = 0;
 
         int nValidVert = 0;
         for (auto &vert : Vertices)
@@ -1491,7 +1533,7 @@ namespace {
                 face->Valid = false;
                 continue;
             }
-            validFaceNum++;
+            NumOfValidFace++;
             Results[v0->LOCAL_MARK]->Removed = false;
             Results[v1->LOCAL_MARK]->Removed = false;
             Results[v2->LOCAL_MARK]->Removed = false;
