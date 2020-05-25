@@ -32,12 +32,12 @@ namespace
     static const double AREA_TOLERANCE = 0.999;
     static const double NORMAL_TOLERANCE = 0.2;
 
-    struct Face;
     struct Edge;
+    struct Face;
 
     struct Vertex
     {
-        Vertex() {}
+        Vertex() : CurrentEdge(ToUpdateEdge) {}
 
         Vec3 Pos;
         uint16_t ID = 0;
@@ -47,6 +47,9 @@ namespace
 
         // Need to update?
         Edge *ToUpdateEdge = nullptr;
+
+        // Aliasing name
+        Edge *&CurrentEdge;
 
         // use LOCAL_MARK to update
         unsigned int LOCAL_MARK = 0;
@@ -74,23 +77,27 @@ namespace
 
     struct Edge
     {
-        Edge(Vertex *v0, Vertex *v1) : Start(v0), End(v1) {}
+        Edge(Vertex *v0, Vertex *v1) : Start(v0), End(v1), NextEdge(ToBeReplaced) {}
 
         // start & end vertex
         Vertex *Start = nullptr;
         Vertex *End = nullptr;
 
-        // Number of adjacent faces
-        unsigned int AdjFaces = 0;
-
         // collapse property for edge-based simplification
         unsigned int LOCAL_MARK = 0;
+
+        // Aliasing name
+        unsigned int AdjFaces = 0;
+
         double Priority = 0.0;
         Vec3 OptPos;
 
         // heap related
         int HeapIndex = -1;
         Edge *ToBeReplaced = nullptr;
+
+        // Aliasing name
+        Edge *&NextEdge;
 
         void replaceVertex(Vertex *dst, Vertex *src)
         {
@@ -114,7 +121,7 @@ namespace
             return (Start == start && End == end) || (Start == end && End == start);
         }
 
-        void update(Vertex *start, Vertex *end)
+        void init(Vertex *start, Vertex *end)
         {
             // update vertices
             Start = start;
@@ -564,7 +571,7 @@ namespace
             if (EdgePool.size() > EdgePoolIdx)
             {
                 Edge *e = EdgePool[EdgePoolIdx++];
-                e->update(v0, v1);
+                e->init(v0, v1);
                 return e;
             }
 
@@ -1188,7 +1195,7 @@ namespace
                 Edge* e = nullptr;
                 // ToUpdateEdge and ToBeReplaced are used as Current & Next Edge
                 // as a list structure
-                Edge * possibleE = v0->ToUpdateEdge;
+                Edge * possibleE = v0->CurrentEdge;
                 while (possibleE != nullptr)
                 {
                     if (possibleE->containVertex(v1))
@@ -1196,9 +1203,9 @@ namespace
                         e = possibleE;
                         break;
                     }
-                    if (possibleE->ToBeReplaced != nullptr)
+                    if (possibleE->NextEdge != nullptr)
                     {
-                        possibleE = possibleE->ToBeReplaced;
+                        possibleE = possibleE->NextEdge;
                     }
                     else
                     {
@@ -1212,12 +1219,12 @@ namespace
                     Edges.push_back(e);
                     if (possibleE != nullptr)
                     {
-                        e->ToBeReplaced = v0->ToUpdateEdge;
-                        v0->ToUpdateEdge = e;
+                        e->NextEdge = v0->CurrentEdge;
+                        v0->CurrentEdge = e;
                     }
                     else
                     {
-                        v0->ToUpdateEdge = e;
+                        v0->CurrentEdge = e;
                     }
 
                 }
@@ -1227,11 +1234,11 @@ namespace
         }
         for (auto v : Vertices)
         {
-            v->ToUpdateEdge = nullptr;
+            v->CurrentEdge = nullptr;
         }
         for (auto e : Edges)
         {
-            e->ToBeReplaced = nullptr;
+            e->NextEdge = nullptr;
         }
 
         // manifold or non-manifold
