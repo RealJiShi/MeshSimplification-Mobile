@@ -57,9 +57,13 @@ namespace
         // adjacent faces
         std::vector<Face *> Neighbors;
 
+        // adjacent edges
+        std::list<Edge *> Edges;
+
         void reset()
         {
             Neighbors.clear();
+            Edges.clear();
             LOCAL_MARK = 0;
             ToUpdateEdge = nullptr;
             ID = 0;
@@ -861,8 +865,11 @@ namespace
             return nDeleted;
         }
 
-        static unsigned int updateEdge(EdgeHeap &heap, Edge &edge, std::vector<Edge *> &EdgeCache)
+        static unsigned int updateEdge(EdgeHeap &heap, Edge &edge)
         {
+            // edge cache
+            static std::vector<Edge *> EdgeCache;
+
             // update global mark
             GLOBAL_MARK++;
 
@@ -1046,7 +1053,6 @@ namespace
             }
         };
 
-        Edge *buildEdge(Vertex *v0, Vertex *v1);
         void buildQuadricMatrix();
         void initCollapses();
 
@@ -1061,12 +1067,7 @@ namespace
         // data section
         std::vector<Vertex *> Vertices;
         std::vector<Face *> Faces;
-
-        // build edge for border setup
-        std::unordered_map<uint32_t, Edge *> EdgeMap;
-
         std::vector<Edge *> Edges;
-        std::vector<Edge *> EdgeCache;
 
         // Bounding box Diagonal
         double OriginBBoxDiagonal = 0.0;
@@ -1088,7 +1089,6 @@ namespace
         m_bStrictConstraint = false;
         Vertices.clear();
         Faces.clear();
-        EdgeMap.clear();
         Edges.clear();
         Results.clear();
         CollapseHelper::reset();
@@ -1179,12 +1179,30 @@ namespace
                 Vertex *v0 = face->Vertices[i_vert];
                 Vertex *v1 = face->Vertices[(i_vert + 1) % 3];
 
-                Edge *e = buildEdge(v0, v1);
-                if (e != nullptr)
+                if (v0->ID > v1->ID)
                 {
-                    e->AdjFaces++;
+                    std::swap(v0, v1);
                 }
-                face->Edges[i_vert] = e;
+
+                Edge *edge = nullptr;
+                for (auto iter : v0->Edges)
+                {
+                    if (iter->containVertex(v1))
+                    {
+                        edge = iter;
+                        break;
+                    }
+                }
+
+                if (edge == nullptr)
+                {
+                    // create one
+                    edge = CollapseHelper::spawnEdgeFromPool(v0, v1);
+                    Edges.push_back(edge);
+                    v0->Edges.push_back(edge);
+                }
+                edge->AdjFaces++;
+                face->Edges[i_vert] = edge;
             }
         }
 
@@ -1244,22 +1262,6 @@ namespace
     bool MeshReducerPrivate::isManifoldMesh() const
     {
         return m_bStrictConstraint;
-    }
-
-    Edge *MeshReducerPrivate::buildEdge(Vertex *v0, Vertex *v1)
-    {
-        // find first
-        uint32_t key = v0->ID < v1->ID ? ((uint32_t(v0->ID) << 16) | v1->ID) :
-                       ((uint32_t(v1->ID) << 16) | v0->ID);
-        if (EdgeMap.find(key) != EdgeMap.end())
-        {
-            return EdgeMap[key];
-        }
-
-        auto edge = CollapseHelper::spawnEdgeFromPool(v0, v1);
-        Edges.push_back(edge);
-        EdgeMap[key] = edge;
-        return edge;
     }
 
     void MeshReducerPrivate::buildQuadricMatrix()
@@ -1433,7 +1435,7 @@ namespace
                 end = std::chrono::steady_clock::now();
             }
             // update
-            unsigned int nDeleted = CollapseHelper::updateEdge(heap, top, EdgeCache);
+            unsigned int nDeleted = CollapseHelper::updateEdge(heap, top);
             nowCount -= nDeleted;
         }
     }
