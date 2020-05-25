@@ -8,8 +8,8 @@ class OffFileHelper
 {
 public:
     static bool load(const std::string &file_path,
-            std::vector<double> &vertices,
-            std::vector<uint16_t> &indices)
+                     std::vector<double> &vertices,
+                     std::vector<uint16_t> &indices)
     {
         std::ifstream fin(file_path);
         if (!fin)
@@ -23,7 +23,7 @@ public:
         {
             if (line.length() > 1 && line[0] != '#')
             {
-                if (line == "OFF")
+                if (line.find("OFF") != std::string::npos)
                 {
                     break;
                 }
@@ -72,8 +72,8 @@ public:
     }
 
     static bool store(const std::string &file_path,
-            const std::vector<double> &vertices,
-            const std::vector<uint16_t> &indices)
+                      const std::vector<double> &vertices,
+                      const std::vector<uint16_t> &indices)
     {
         std::ofstream fout(file_path);
         if (!fout)

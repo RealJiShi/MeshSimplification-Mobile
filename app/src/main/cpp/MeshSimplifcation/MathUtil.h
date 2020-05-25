@@ -178,6 +178,11 @@ public:
         m[9] = d * d;
     }
 
+    void reset()
+    {
+        memset(m, 0, sizeof(m));
+    }
+
     double operator[](unsigned int index) const
     {
         return m[index];
