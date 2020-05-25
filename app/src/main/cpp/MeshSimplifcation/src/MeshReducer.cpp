@@ -1163,6 +1163,7 @@ namespace
         unsigned int nFace = nInd / 3;
         Faces.resize(nFace);
         CollapseHelper::reserveFacePool(nFace);
+        Edges.reserve(2 * nFace + 1);
         for (unsigned int idx = 0; idx < nFace; ++idx)
         {
             // get face from pool
@@ -1184,26 +1185,53 @@ namespace
                     std::swap(v0, v1);
                 }
 
-                Edge *edge = nullptr;
-                for (auto iter : v0->Edges)
+                Edge* e = nullptr;
+                // ToUpdateEdge and ToBeReplaced are used as Current & Next Edge
+                // as a list structure
+                Edge * possibleE = v0->ToUpdateEdge;
+                while (possibleE != nullptr)
                 {
-                    if (iter->containVertex(v1))
+                    if (possibleE->containVertex(v1))
                     {
-                        edge = iter;
+                        e = possibleE;
+                        break;
+                    }
+                    if (possibleE->ToBeReplaced != nullptr)
+                    {
+                        possibleE = possibleE->ToBeReplaced;
+                    }
+                    else
+                    {
                         break;
                     }
                 }
 
-                if (edge == nullptr)
+                if (e == nullptr)
                 {
-                    // create one
-                    edge = CollapseHelper::spawnEdgeFromPool(v0, v1);
-                    Edges.push_back(edge);
-                    v0->Edges.push_back(edge);
+                    e = CollapseHelper::spawnEdgeFromPool(v0, v1);
+                    Edges.push_back(e);
+                    if (possibleE != nullptr)
+                    {
+                        e->ToBeReplaced = v0->ToUpdateEdge;
+                        v0->ToUpdateEdge = e;
+                    }
+                    else
+                    {
+                        v0->ToUpdateEdge = e;
+                    }
+
                 }
-                edge->AdjFaces++;
-                face->Edges[i_vert] = edge;
+                e->AdjFaces++;
+                face->Edges[i_vert] = e;
             }
+        }
+        for (auto v : Vertices)
+        {
+            v->ToUpdateEdge = nullptr;
+        }
+        for (auto e : Edges)
+        {
+            e->ToBeReplaced = nullptr;
         }
 
         // manifold or non-manifold
