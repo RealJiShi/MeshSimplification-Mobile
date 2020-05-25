@@ -21,7 +21,8 @@ Confidential and Proprietary - Qualcomm Technologies, Inc.
 #include <unordered_map>
 #include "MathUtil.h"
 
-namespace {
+namespace
+{
     using namespace common;
     static const unsigned int TIMEOUT = 5;
     static const unsigned int MAX_ITERATION = 100;
@@ -31,11 +32,11 @@ namespace {
     static const double AREA_TOLERANCE = 0.999;
     static const double NORMAL_TOLERANCE = 0.2;
 
-    struct Vertex;
     struct Face;
     struct Edge;
 
-    struct Vertex {
+    struct Vertex
+    {
         Vertex() {}
 
         Vec3 Pos;
@@ -56,7 +57,8 @@ namespace {
         // adjacent faces
         std::vector<Face *> Neighbors;
 
-        void reset() {
+        void reset()
+        {
             Neighbors.clear();
             LOCAL_MARK = 0;
             ToUpdateEdge = nullptr;
@@ -66,7 +68,8 @@ namespace {
         }
     };
 
-    struct Edge {
+    struct Edge
+    {
         Edge(Vertex *v0, Vertex *v1) : Start(v0), End(v1) {}
 
         // start & end vertex
@@ -124,7 +127,8 @@ namespace {
         }
     };
 
-    struct Face {
+    struct Face
+    {
         Face() {}
 
         void reset()
@@ -202,7 +206,8 @@ namespace {
             return Vertices[0] == v || Vertices[1] == v || Vertices[2] == v;
         }
 
-        Vec3 normal() const {
+        Vec3 normal() const
+        {
             const Vec3 &v0 = Vertices[0]->Pos;
             const Vec3 &v1 = Vertices[1]->Pos;
             const Vec3 &v2 = Vertices[2]->Pos;
@@ -213,7 +218,8 @@ namespace {
             return e0.cross(e1);
         }
 
-        double computeQuality(Vertex *start, const Vec3 &optPos) {
+        double computeQuality(Vertex *start, const Vec3 &optPos)
+        {
             Vertex *v1 = nullptr;
             Vertex *v2 = nullptr;
             this->setCentral(start, v1, v2);
@@ -224,7 +230,8 @@ namespace {
             const Vec3 &normal = e0.cross(e1);
 
             double len_norm = normal.length();
-            if (len_norm == 0.0) {
+            if (len_norm == 0.0)
+            {
                 return 0;
             }
 
@@ -238,7 +245,8 @@ namespace {
         }
 
         // get opposite edges
-        void getEdges(Vertex *v0, Vertex *v1, Edge *&v2v1, Edge *&v2v0) {
+        void getEdges(Vertex *v0, Vertex *v1, Edge *&v2v1, Edge *&v2v0)
+        {
             if (Vertices[0] == v0)
             {
                 if (Vertices[1] == v1)
@@ -370,37 +378,6 @@ namespace {
             {
                 heapifyDown(e);
             }
-        }
-
-        void remove(Edge *e)
-        {
-            // get current index
-            int cur_idx = e->HeapIndex;
-            if (cur_idx < 0 || cur_idx >= Length || e != Container[cur_idx])
-            {
-                return;
-            }
-
-            // mark as removed
-            e->HeapIndex = -2;
-
-            if (cur_idx != (Length - 1))
-            {
-                auto last = Container[cur_idx];
-                Container[cur_idx] = last;
-                last->HeapIndex = cur_idx;
-                if (last->Priority < e->Priority)
-                {
-                    heapifyUp(last);
-                }
-                else if (last->Priority > e->Priority)
-                {
-                    heapifyDown(last);
-                }
-            }
-
-            // remove
-            --Length;
         }
 
         void pop(Edge *edge)
@@ -623,36 +600,25 @@ namespace {
                 double quality = face->computeQuality(start, optPos);
                 if (quality == 0)
                 {
-                    minQual = 0;
-                    break;
+                    return std::numeric_limits<double>::infinity();
                 }
                 minQual = std::min(minQual, quality);
             }
 
             // for each face related to end vertex
-            if (minQual != 0)
+            for (auto face : end->Neighbors)
             {
-                for (auto face : end->Neighbors)
+                if (!face->Valid || face->containVertex(start))
                 {
-                    if (!face->Valid || face->containVertex(start))
-                    {
-                        continue;
-                    }
-
-                    double quality = face->computeQuality(end, optPos);
-                    if (quality == 0)
-                    {
-                        minQual = 0;
-                        break;
-                    }
-                    minQual = std::min(minQual, quality);
+                    continue;
                 }
-            }
 
-            if (minQual == 0)
-            {
-                //avoid selection of edge which would cause regression of faces
-                return std::numeric_limits<double>::infinity();
+                double quality = face->computeQuality(end, optPos);
+                if (quality == 0)
+                {
+                    return std::numeric_limits<double>::infinity();
+                }
+                minQual = std::min(minQual, quality);
             }
 
             // cost
@@ -710,15 +676,11 @@ namespace {
             for (unsigned int j = 0; j < 3; ++j)
             {
                 Edge *e = face.Edges[j];
-                if (e->LOCAL_MARK < GLOBAL_MARK)
+                // need to update if edge LOCAL_MARK is less than vertex LOCAL_MARK
+                if (e->LOCAL_MARK <= e->Start->LOCAL_MARK || e->LOCAL_MARK <= e->End->LOCAL_MARK)
                 {
-                    // need to update if edge LOCAL_MARK is less than vertex LOCAL_MARK
-                    if (e->LOCAL_MARK <= e->Start->LOCAL_MARK ||
-                        e->LOCAL_MARK <= e->End->LOCAL_MARK)
-                    {
-                        e->LOCAL_MARK = GLOBAL_MARK;
-                        calcOptimalPosition(*e, e->Priority);
-                    }
+                    e->LOCAL_MARK = GLOBAL_MARK;
+                    calcOptimalPosition(*e, e->Priority);
                 }
                 if (e->Priority < min)
                 {
@@ -765,7 +727,8 @@ namespace {
                 const Vec3 &d1 = (v1->Pos - optPos).normalize();
                 const Vec3 &d2 = (v2->Pos - optPos).normalize();
 
-                if (std::fabs(d1.dot(d2)) > AREA_TOLERANCE) {
+                if (std::fabs(d1.dot(d2)) > AREA_TOLERANCE)
+                {
                     return true;
                 }
 
@@ -959,7 +922,7 @@ namespace {
             }
 
             // return if v0 is an isolated vertex
-            if (v0->Neighbors.size() == 0)
+            if (v0->Neighbors.empty())
             {
                 v0->Removed = true;
                 return nDeleted;
@@ -999,6 +962,25 @@ namespace {
             }
             v1->Neighbors.clear();
             return nDeleted;
+        }
+
+        static void release()
+        {
+            for (auto f : FacePool)
+            {
+                delete f;
+            }
+            for (auto v : VertexPool)
+            {
+                delete v;
+            }
+            for (auto e : EdgePool)
+            {
+                delete e;
+            }
+            FacePool.clear();
+            VertexPool.clear();
+            EdgePool.clear();
         }
 
         static void syncIntoEdgeCache(Edge *e1, Vertex *v0, std::vector<Edge *> &EdgeCache)
@@ -1086,9 +1068,8 @@ namespace {
         std::vector<Edge *> Edges;
         std::vector<Edge *> EdgeCache;
 
-        // Bounding box
-        Vec3 OriginBBoxMin;
-        Vec3 OriginBBoxMax;
+        // Bounding box Diagonal
+        double OriginBBoxDiagonal = 0.0;
 
         // Results
         std::vector<Vertex *> Results;
@@ -1097,7 +1078,10 @@ namespace {
 
     MeshReducerPrivate::MeshReducerPrivate() {}
 
-    MeshReducerPrivate::~MeshReducerPrivate() {}
+    MeshReducerPrivate::~MeshReducerPrivate()
+    {
+        CollapseHelper::release();
+    }
 
     void MeshReducerPrivate::reset()
     {
@@ -1172,9 +1156,7 @@ namespace {
 
         //CollapseHelper::ScaleFactor = double(1e8 * std::pow(1.0 / double((max - min).length()), 6));
         CollapseHelper::ScaleFactor = double(1e8 * std::pow(1.0 / double((max - min).squaredLength()), 3));
-
-        OriginBBoxMax = max;
-        OriginBBoxMin = min;
+        OriginBBoxDiagonal = (max - min).squaredLength();
 
         // build faces
         unsigned int fCounter = 0;
@@ -1207,7 +1189,6 @@ namespace {
         }
 
         // manifold or non-manifold
-        unsigned int nonManiEdge = 0;
         for (auto edge : Edges)
         {
             if (edge->AdjFaces == 1)
@@ -1221,7 +1202,7 @@ namespace {
     void MeshReducerPrivate::store(std::vector<double> &vertices, std::vector<uint16_t> &indices)
     {
         unsigned int nValid = 0;
-        for (auto &vert : Results) //scan pVec only to get rid of removed vertex
+        for (auto &vert : Results)
         {
             if (vert->Removed)
             {
@@ -1246,10 +1227,10 @@ namespace {
             vert->ID = i_valid++;
         }
 
-
-        indices.resize(this->NumOfValidFace * 3);
+        indices.resize(NumOfValidFace * 3);
         int faceIndex = 0;
-        for (auto face : Faces) {
+        for (auto face : Faces)
+        {
             if (!face->Valid)
             {
                 continue;
@@ -1564,15 +1545,14 @@ namespace {
         }
 
         double len_diag = (max - min).squaredLength();
-        double len_diag_old = (OriginBBoxMax - OriginBBoxMin).squaredLength();
-
-        double minDiag = std::min(len_diag, len_diag_old);
-        double maxDiag = std::max(len_diag, len_diag_old);
+        double minDiag = std::min(len_diag, OriginBBoxDiagonal);
+        double maxDiag = std::max(len_diag, OriginBBoxDiagonal);
         return minDiag > VALID_THRESHOLD * maxDiag;
     }
 } // namespace
 
-namespace common {
+namespace common
+{
     static MeshReducerPrivate reducer;
     bool MeshReducer::reduce(const double *vertices, const uint16_t *indices, unsigned int nVert,
                              unsigned int nIdx,
@@ -1602,4 +1582,3 @@ namespace common {
         return bValid;
     }
 } // namespace common
-                                                                                                                                                                                                                                                                                   
