@@ -1615,7 +1615,11 @@ namespace common
             reducer.reduce(nTarget, true);
             bValid = reducer.isValid();
         }
-        reducer.store(reducedVertices, reducedIndices);
+        // if invalid, don't store
+        if (bValid)
+        {
+            reducer.store(reducedVertices, reducedIndices);
+        }
         return bValid;
     }
 } // namespace common
