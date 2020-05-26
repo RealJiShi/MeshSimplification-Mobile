@@ -7,6 +7,7 @@
 #include "MeshSimplifcation/OffFileHelper.h"
 #include "MeshSimplifcation/QuadDecomposition.h"
 #include "MeshSimplifcation/Occluder.h"
+#include "MeshSimplifcation/OccluderSaver.h"
 
 #define  LOG_TAG    "MeshSimplication"
 #define  LOG(...)  __android_log_print(ANDROID_LOG_INFO,LOG_TAG,__VA_ARGS__)
@@ -73,10 +74,29 @@ bool load(const std::string &file, std::vector<double> &Vertices, std::vector<ui
     return true;
 }
 
+bool compareFiles(const std::string &src, const std::string &dst)
+{
+    std::vector<int> VerticesSrc, VerticesDst;
+    OccluderSaver::load(src, VerticesSrc);
+    OccluderSaver::load(dst, VerticesDst);
+    int nCounter = 0;
+    for (uint32_t i = 0; i < VerticesSrc.size(); ++i)
+    {
+        if (VerticesSrc[i] != VerticesDst[i])
+        {
+            nCounter++;
+        }
+    }
+    if (nCounter > 36)
+    {
+        return false;
+    }
+    return true;
+}
+
 bool process(const std::string &file, std::vector<double> &Vertices, std::vector<uint16_t> &Indices,
              float &runtime, bool bIsSave = false, float ratio = 0.25f)
 {
-    static std::string OUPTUT = "/sdcard/LOD/";
     if (Vertices.empty() || Indices.empty())
     {
         return false;
@@ -92,66 +112,66 @@ bool process(const std::string &file, std::vector<double> &Vertices, std::vector
     unsigned int nTarget = static_cast<unsigned int>(float(nIdx) / 3.0f * 0.25f);
     bool bValid = common::MeshReducer::reduce(&Vertices[0], &Indices[0], nVert, nIdx,
             reducedVertices, reducedIndices, nTarget);
-//
-//    // keep consistent with QOC code
-//    std::vector<__m128> VerticesVec;
-//    std::vector<unsigned int> IndicesVec;
-//    if (!bValid)
-//    {
-//        VerticesVec.resize(Vertices.size() / 3);
-//        IndicesVec.resize(Indices.size());
-//        for (unsigned int i_vert = 0; i_vert < Vertices.size() / 3; ++i_vert)
-//        {
-//            VerticesVec[i_vert] = _mm_setr_ps(Vertices[3 * i_vert + 0],
-//                                              Vertices[3 * i_vert + 1],
-//                                              Vertices[3 * i_vert + 2],
-//                                              1.0f);
-//        }
-//
-//        for (unsigned int i_index = 0; i_index < Indices.size(); ++i_index)
-//        {
-//            IndicesVec[i_index] = Indices[i_index];
-//        }
-//    }
-//    else
-//    {
-//        VerticesVec.resize(reducedVertices.size() / 3);
-//        IndicesVec.resize(reducedIndices.size());
-//        for (unsigned int i_vert = 0; i_vert < reducedVertices.size() / 3; ++i_vert)
-//        {
-//            VerticesVec[i_vert] = _mm_setr_ps(reducedVertices[3 * i_vert + 0],
-//                                              reducedVertices[3 * i_vert + 1],
-//                                              reducedVertices[3 * i_vert + 2],
-//                                              1.0f);
-//        }
-//
-//        for (unsigned int i_index = 0; i_index < reducedIndices.size(); ++i_index)
-//        {
-//            IndicesVec[i_index] = reducedIndices[i_index];
-//        }
-//    }
-//
-//    // Quad Decomposition
-//    IndicesVec = common::QuadDecomposition::decompose(IndicesVec, VerticesVec);
-//
-//    // padding to a multiple of 4 quads
-//    // while ((IndicesVec.size() % 16) != 0)
-//    while ((IndicesVec.size() & 15) != 0)
-//    {
-//        IndicesVec.push_back(IndicesVec[0]);
-//    }
-//
-//    // Get AABB info
-//    AABB aabb(VerticesVec);
-//
-//    // expand the data
-//    std::vector<__m128> VerticesVecExt;
-//    VerticesVecExt.reserve(IndicesVec.size());
-//    for (auto index : IndicesVec)
-//    {
-//        VerticesVecExt.push_back(VerticesVec[index]);
-//    }
-//    auto occluderBaked = common::Occluder::bake(VerticesVecExt, aabb.Min, aabb.Max);
+
+    // keep consistent with QOC code
+    std::vector<__m128> VerticesVec;
+    std::vector<unsigned int> IndicesVec;
+    if (!bValid)
+    {
+        VerticesVec.resize(Vertices.size() / 3);
+        IndicesVec.resize(Indices.size());
+        for (unsigned int i_vert = 0; i_vert < Vertices.size() / 3; ++i_vert)
+        {
+            VerticesVec[i_vert] = _mm_setr_ps(Vertices[3 * i_vert + 0],
+                                              Vertices[3 * i_vert + 1],
+                                              Vertices[3 * i_vert + 2],
+                                              1.0f);
+        }
+
+        for (unsigned int i_index = 0; i_index < Indices.size(); ++i_index)
+        {
+            IndicesVec[i_index] = Indices[i_index];
+        }
+    }
+    else
+    {
+        VerticesVec.resize(reducedVertices.size() / 3);
+        IndicesVec.resize(reducedIndices.size());
+        for (unsigned int i_vert = 0; i_vert < reducedVertices.size() / 3; ++i_vert)
+        {
+            VerticesVec[i_vert] = _mm_setr_ps(reducedVertices[3 * i_vert + 0],
+                                              reducedVertices[3 * i_vert + 1],
+                                              reducedVertices[3 * i_vert + 2],
+                                              1.0f);
+        }
+
+        for (unsigned int i_index = 0; i_index < reducedIndices.size(); ++i_index)
+        {
+            IndicesVec[i_index] = reducedIndices[i_index];
+        }
+    }
+
+    // Quad Decomposition
+    IndicesVec = common::QuadDecomposition::decompose(IndicesVec, VerticesVec);
+
+    // padding to a multiple of 4 quads
+    // while ((IndicesVec.size() % 16) != 0)
+    while ((IndicesVec.size() & 15) != 0)
+    {
+        IndicesVec.push_back(IndicesVec[0]);
+    }
+
+    // Get AABB info
+    AABB aabb(VerticesVec);
+
+    // expand the data
+    std::vector<__m128> VerticesVecExt;
+    VerticesVecExt.reserve(IndicesVec.size());
+    for (auto index : IndicesVec)
+    {
+        VerticesVecExt.push_back(VerticesVec[index]);
+    }
+    auto occluderBaked = common::Occluder::bake(VerticesVecExt, aabb.Min, aabb.Max);
 
     auto stop = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
@@ -160,8 +180,16 @@ bool process(const std::string &file, std::vector<double> &Vertices, std::vector
     // only save at the last loop
     if (bIsSave)
     {
-        std::string output = file + "LOD.off";
-        if (!OffFileHelper::store(OUPTUT + output, reducedVertices, reducedIndices))
+        static std::string OUTPUT_LOD = "/sdcard/LOD/";
+        static std::string OUTPUT_OCC = "/sdcard/OCC/";
+        std::string fLod = file + "LOD.off";
+        if (!OffFileHelper::store(OUTPUT_LOD + fLod, reducedVertices, reducedIndices))
+        {
+            return false;
+        }
+
+        std::string fOcc = file + ".occ";
+        if (!OccluderSaver::store(OUTPUT_OCC + fOcc, occluderBaked))
         {
             return false;
         }
@@ -198,6 +226,19 @@ Java_com_qualcomm_meshsimplication_MainActivity_stringFromJNI(
         }
     }
 
+    // compare
+    std::string results_str;
+    for (auto &mesh : MeshMap)
+    {
+        const std::string &src = std::string("/sdcard/GOLDEN_DATA/") + mesh.first + ".occ";
+        const std::string &dst = std::string("/sdcard/OCC/") + mesh.first + ".occ";
+        if (!compareFiles(src, dst))
+        {
+            results_str += mesh.first;
+            results_str += std::string("\n");
+        }
+    }
+
     for (auto &mesh : MeshMap)
     {
         mesh.second.Time /= NUM_LOOP;
@@ -217,6 +258,6 @@ Java_com_qualcomm_meshsimplication_MainActivity_stringFromJNI(
         stat.close();
     }
 
-    std::string hello = "Finished";
-    return env->NewStringUTF(hello.c_str());
+    results_str += "Finished";
+    return env->NewStringUTF(results_str.c_str());
 }
