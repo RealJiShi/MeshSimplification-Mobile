@@ -596,7 +596,6 @@ namespace
 
         // Face pool to reduce memory reallocation
         static std::vector<Face *> FacePool;
-        static uint32_t FacePoolIdx;
 
         // Face node pool
         static std::vector<FaceNode *> FaceNodePool;
@@ -608,50 +607,13 @@ namespace
 
         // Edge pool to reduce memory reallocation
         static std::vector<Vertex *> VertexPool;
-        static uint32_t VertexPoolIdx;
 
         static void reset()
         {
             GLOBAL_MARK = 0;
             ScaleFactor = 1.0;
             EdgePoolIdx = 0;
-            VertexPoolIdx = 0;
-            FacePoolIdx = 0;
             FaceNodePoolIdx = 0;
-        }
-
-        // get vertex from pool, create one if not exists
-        static Vertex* spawnVertexFromPool()
-        {
-            if (VertexPoolIdx >= VertexPool.size())
-            {
-                Vertex* pool = new Vertex[POOL_SIZE];
-                for (int idx = 0; idx < POOL_SIZE; idx++)
-                {
-                    VertexPool.push_back(&pool[idx]);
-                }
-            }
-
-            // use one in the pool
-            auto vert = VertexPool[VertexPoolIdx++];
-            vert->reset();
-            return vert;
-        }
-
-        // get face from pool, create one if not exists
-        static Face* spawnFaceFromPool()
-        {
-            if (FacePoolIdx >= FacePool.size())
-            {
-                Face* pool = new Face[POOL_SIZE];
-                for (int idx = 0; idx < POOL_SIZE; idx++)
-                {
-                    FacePool.push_back(&pool[idx]);
-                }
-            }
-            auto f = FacePool[FacePoolIdx++];
-            f->reset();
-            return f;
         }
 
         // get face node from pool, create one if not exists
@@ -689,8 +651,38 @@ namespace
         {
             VertexPool.reserve(nVert);
             FacePool.reserve(nFace);
-            FaceNodePool.reserve(nFace * 3);
-            EdgePool.reserve(nFace * 3 / 2);
+
+            // allocate memory for vertex
+            while (VertexPool.size() < nVert)
+            {
+                Vertex *v = new Vertex[POOL_SIZE];
+                for (unsigned int i_vert = 0; i_vert < POOL_SIZE; ++i_vert)
+                {
+                    VertexPool.push_back(&v[i_vert]);
+                }
+            }
+
+            // reset
+            for (unsigned int i_vert = 0; i_vert < nVert; ++i_vert)
+            {
+                VertexPool[i_vert]->reset();
+            }
+
+            // allocate memory for face
+            while (FacePool.size() < nFace)
+            {
+                Face *f = new Face[POOL_SIZE];
+                for (unsigned int i_face = 0; i_face < POOL_SIZE; ++i_face)
+                {
+                    FacePool.push_back(&f[i_face]);
+                }
+            }
+
+            // reset
+            for (unsigned int i_face = 0; i_face < nFace; ++i_face)
+            {
+                FacePool[i_face]->reset();
+            }
         }
 
         // cost = VT * Q * V
@@ -727,11 +719,6 @@ namespace
                     return std::numeric_limits<double>::infinity();
                 }
                 minQual = std::min(minQual, quality);
-
-                if (quality == 0)
-                {
-                    break;
-                }
             }
 
             // for each face related to end vertex
@@ -1109,7 +1096,6 @@ namespace
     double CollapseHelper::ScaleFactor = 1.0;
 
     std::vector<Face *> CollapseHelper::FacePool;
-    uint32_t CollapseHelper::FacePoolIdx = 0;
 
     std::vector<FaceNode *> CollapseHelper::FaceNodePool;
     uint32_t CollapseHelper::FaceNodePoolIdx = 0;
@@ -1118,7 +1104,6 @@ namespace
     uint32_t CollapseHelper::EdgePoolIdx = 0;
 
     std::vector<Vertex *> CollapseHelper::VertexPool;
-    uint32_t CollapseHelper::VertexPoolIdx = 0;
 
     class MeshReducerPrivate {
     public:
@@ -1209,6 +1194,9 @@ namespace
         Vec3 min(std::numeric_limits<double>::max());
         Vec3 max(std::numeric_limits<double>::min());
 
+        // reserve first
+        unsigned int nFace = nInd / 3;
+        CollapseHelper::reservePool(nVert, nFace);
         unsigned int vCounter = 0;
         for (unsigned int i_vert = 0; i_vert < nVert; ++i_vert) {
             double x = vertices[vCounter++];
@@ -1216,7 +1204,7 @@ namespace
             double z = vertices[vCounter++];
 
             // get vertex from pool
-            auto vert = CollapseHelper::spawnVertexFromPool();
+            auto vert = CollapseHelper::VertexPool[i_vert];
             Vertices[i_vert] = vert;
             vert->Pos = Vec3(x, y, z);
             vert->ID = i_vert;
@@ -1238,14 +1226,12 @@ namespace
 
         // build faces
         unsigned int fCounter = 0;
-        unsigned int nFace = nInd / 3;
         Faces.resize(nFace);
-        CollapseHelper::reservePool(nVert, nFace);
         Edges.reserve(2 * nFace + 1);
         for (unsigned int idx = 0; idx < nFace; ++idx)
         {
             // get face from pool
-            auto face = CollapseHelper::spawnFaceFromPool();
+            auto face = CollapseHelper::FacePool[idx];
             Faces[idx] = face;
             // create vertex neighbor list
             for (unsigned int i_vert = 0; i_vert < 3; ++i_vert)
@@ -1626,19 +1612,23 @@ namespace
 
     bool MeshReducerPrivate::isValid() const
     {
+        if (Vertices.empty())
+        {
+            return false;
+        }
 
         Vec3 min(std::numeric_limits<double>::max());
         Vec3 max(std::numeric_limits<double>::min());
+
+        min.X = Vertices[0]->Pos.X;
+        max.X = Vertices.back()->Pos.X;
+
         for (auto vert : Vertices)
         {
             if (vert->Removed)
             {
                 continue;
             }
-
-            // get scale
-            min.X = std::min(min.X, vert->Pos.X);
-            max.X = std::max(max.X, vert->Pos.X);
 
             min.Y = std::min(min.Y, vert->Pos.Y);
             max.Y = std::max(max.Y, vert->Pos.Y);
