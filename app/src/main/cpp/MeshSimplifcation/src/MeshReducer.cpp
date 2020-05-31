@@ -1645,16 +1645,8 @@ namespace common
             reducer.reduce(nTarget, true);
             bValid = reducer.isValid();
         }
-<<<<<<< HEAD
-        // if invalid, don't store
-        if (bValid)
-        {
-            reducer.store(reducedVertices, reducedIndices);
-        }
-=======
 
         reducer.store(reducedVertices, reducedIndices);
->>>>>>> regression
         return bValid;
     }
 } // namespace common

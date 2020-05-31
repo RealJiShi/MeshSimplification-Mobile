@@ -7,7 +7,6 @@
 */
 
 #include "QuadDecomposition.h"
-
 #include <algorithm>
 #include <cassert>
 #include <numeric>
@@ -16,287 +15,90 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
-
 #include "MathUtil.h"
-#include "SSE2NEON.h"
 
 using namespace common;
 
 typedef int Vertex;
-
 typedef std::vector<Vertex> Path;
 
-struct Graph
+namespace
 {
-    size_t numVertices() const
+    struct PairHash
     {
-        return m_adjacencyList.size();
+    public:
+        template <typename T, typename U>
+        std::size_t operator()(const std::pair<T, U> &x) const
+        {
+            auto hashT = std::hash<T>{}(x.first);
+            auto hashU = std::hash<U>{}(x.second);
+            return hashT ^ (hashU + 0x9e3779b9 + (hashT << 6) + (hashT >> 2));
+        }
+    };
+
+    bool canMergeTrianglesToQuad(__m128 v0, __m128 v1, __m128 v2, __m128 v3)
+    {
+        // Maximum distance of vertices from original plane in world space units
+        float maximumDepthError = 0.5f;
+
+        __m128 n0 = normalize(normal(v0, v1, v2));
+        __m128 planeDistA = _mm_andnot_ps(_mm_set1_ps(-0.0f), _mm_dp_ps(n0, _mm_sub_ps(v1, v3), 0x7F));
+        if (_mm_comigt_ss(planeDistA, _mm_set1_ps(maximumDepthError)))
+        {
+            return false;
+        }
+
+        __m128 n2 = normalize(normal(v2, v3, v0));
+        __m128 planeDistB = _mm_andnot_ps(_mm_set1_ps(-0.0f), _mm_dp_ps(n2, _mm_sub_ps(v1, v3), 0x7F));
+        if (_mm_comigt_ss(planeDistB, _mm_set1_ps(maximumDepthError)))
+        {
+            return false;
+        }
+        return true;
     }
+} // namespace
 
-    std::vector<std::vector<Vertex>> m_adjacencyList;
-};
-
-class Matching
+namespace common
 {
-public:
-    Matching(const Graph &graph) : m_clearToken(0), m_graph(graph), m_matchedVertex(graph.numVertices(), -1), m_tree(graph.numVertices()), m_bridges(graph.numVertices())
+    struct MeshVertex;
+    struct MeshFaceEdge;
+    struct MeshQuad;
+    struct MeshFace;
+
+    //this edge is owned by vertex
+    struct MeshFaceEdge
     {
-        std::vector<Vertex> unmatchedVertices;
+        int vertIdx; //owned by vertIdx in the face
+        MeshFace * face = nullptr;//the face it belong
 
-        // Start with a greedy maximal matching
-        for (Vertex v = 0; v < m_graph.numVertices(); ++v)
+        MeshVertex *start;
+        MeshVertex *end;
+        MeshVertex *apex;
+
+        MeshFaceEdge*next = nullptr; //a linked list to store other Edge owned by the same vertex
+    };
+
+    struct MeshVertex
+    {
+        MeshVertex() {}
+        void init(int idx)
         {
-            if (m_matchedVertex[v] == -1)
-            {
-                bool found = false;
-                for (auto w : m_graph.m_adjacencyList[v])
-                {
-                    if (m_matchedVertex[w] == -1)
-                    {
-                        match(v, w);
-                        found = true;
-                        break;
-                    }
-                }
-
-                if (!found)
-                {
-                    unmatchedVertices.push_back(v);
-                }
-            }
+            vIdx = idx;
+            edgeList = nullptr;
         }
+        int vIdx;
 
-        std::vector<Vertex> path;
-        for (auto v : unmatchedVertices)
+        MeshFaceEdge * edgeList= nullptr; // edge linked list with start point this vertex
+        void addVertexEdge(MeshFaceEdge * e)
         {
-            if (m_matchedVertex[v] == -1)
-            {
-                if (findAugmentingPath(v, path))
-                {
-                    augment(path);
-                    path.clear();
-                }
-            }
-        }
-    }
-
-    Vertex getMatchedVertex(Vertex v)
-    {
-        return m_matchedVertex[v];
-    }
-
-private:
-    void match(Vertex v, Vertex w)
-    {
-        m_matchedVertex[v] = w;
-        m_matchedVertex[w] = v;
-    }
-
-    void augment(std::vector<Vertex> &path)
-    {
-        for (int i = 0; i < path.size(); i += 2)
-        {
-            match(path[i], path[i + 1]);
-        }
-    }
-
-    bool findAugmentingPath(Vertex root, std::vector<Vertex> &path)
-    {
-        // Clear out the forest
-        m_clearToken++;
-
-        // Start our tree root
-        m_tree[root].m_depth = 0;
-        m_tree[root].m_parent = -1;
-        m_tree[root].m_clearToken = m_clearToken;
-        m_tree[root].m_blossom = root;
-
-        m_queue.push(root);
-
-        while (!m_queue.empty())
-        {
-            Vertex v = m_queue.front();
-            m_queue.pop();
-
-            for (auto w : m_graph.m_adjacencyList[v])
-            {
-                if (examineEdge(root, v, w, path))
-                {
-                    while (!m_queue.empty())
-                    {
-                        std::queue<Vertex> empty;
-                        std::swap(m_queue, empty);
-                    }
-
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    bool examineEdge(Vertex root, Vertex v, Vertex w, std::vector<Vertex> &path)
-    {
-        Vertex vBar = find(v);
-        Vertex wBar = find(w);
-
-        if (vBar != wBar)
-        {
-            if (m_tree[wBar].m_clearToken != m_clearToken)
-            {
-                if (m_matchedVertex[w] == -1)
-                {
-                    buildAugmentingPath(root, v, w, path);
-                    return true;
-                }
-                else
-                {
-                    extendTree(v, w);
-                }
-            }
-            else if (m_tree[wBar].m_depth % 2 == 0)
-            {
-                shrinkBlossom(v, w);
-            }
-        }
-
-        return false;
-    }
-
-    void buildAugmentingPath(Vertex root, Vertex v, Vertex w, std::vector<Vertex> &path)
-    {
-        path.push_back(w);
-        findPath(v, root, path);
-    }
-
-    void extendTree(Vertex v, Vertex w)
-    {
-        Vertex u = m_matchedVertex[w];
-
-        Node &nodeV = m_tree[v];
-        Node &nodeW = m_tree[w];
-        Node &nodeU = m_tree[u];
-
-        nodeW.m_depth = nodeV.m_depth + 1 + (nodeV.m_depth & 1); // Must be odd, so we add either 1 or 2
-        nodeW.m_parent = v;
-        nodeW.m_clearToken = m_clearToken;
-        nodeW.m_blossom = w;
-
-        nodeU.m_depth = nodeW.m_depth + 1;
-        nodeU.m_parent = w;
-        nodeU.m_clearToken = m_clearToken;
-        nodeU.m_blossom = u;
-
-        m_queue.push(u);
-    }
-
-    void shrinkBlossom(Vertex v, Vertex w)
-    {
-        Vertex b = findCommonAncestor(v, w);
-
-        shrinkPath(b, v, w);
-        shrinkPath(b, w, v);
-    }
-
-    void shrinkPath(Vertex b, Vertex v, Vertex w)
-    {
-        Vertex u = find(v);
-
-        while (u != b)
-        {
-            makeUnion(b, u);
-            assert(u != -1);
-            assert(m_matchedVertex[u] != -1);
-            u = m_matchedVertex[u];
-            makeUnion(b, u);
-            makeRepresentative(b);
-            m_queue.push(u);
-            m_bridges[u] = std::make_pair(v, w);
-            u = find(m_tree[u].m_parent);
-        }
-    }
-
-    Vertex findCommonAncestor(Vertex v, Vertex w)
-    {
-        while (w != v)
-        {
-            if (m_tree[v].m_depth > m_tree[w].m_depth)
-            {
-                v = m_tree[v].m_parent;
-            }
+            if (edgeList == nullptr) edgeList = e;
             else
             {
-                w = m_tree[w].m_parent;
+                e->next = edgeList;
+                edgeList = e;
             }
         }
-
-        return find(v);
-    }
-
-    void findPath(Vertex s, Vertex t, Path &path)
-    {
-        if (s == t)
-        {
-            path.push_back(s);
-        }
-        else if (m_tree[s].m_depth % 2 == 0)
-        {
-            path.push_back(s);
-            path.push_back(m_matchedVertex[s]);
-            findPath(m_tree[m_matchedVertex[s]].m_parent, t, path);
-        }
-        else
-        {
-            Vertex v = 0, w = 0;
-            std::tie(v, w) = m_bridges[s];
-
-            path.push_back(s);
-
-            size_t offset = path.size();
-            findPath(v, m_matchedVertex[s], path);
-            std::reverse(path.begin() + offset, path.end());
-
-            findPath(w, t, path);
-        }
-    }
-
-    void makeUnion(int x, int y)
-    {
-        int xRoot = find(x);
-        m_tree[xRoot].m_blossom = find(y);
-    }
-
-    void makeRepresentative(int x)
-    {
-        int xRoot = find(x);
-        m_tree[xRoot].m_blossom = x;
-        m_tree[x].m_blossom = x;
-    }
-
-    int find(int x)
-    {
-        if (m_tree[x].m_clearToken != m_clearToken)
-        {
-            return x;
-        }
-
-        if (x != m_tree[x].m_blossom)
-        {
-            // Path compression
-            m_tree[x].m_blossom = find(m_tree[x].m_blossom);
-        }
-
-        return m_tree[x].m_blossom;
-    }
-
-private:
-    int m_clearToken;
-
-    const Graph &m_graph;
-
-    std::queue<Vertex> m_queue;
-    std::vector<Vertex> m_matchedVertex;
+    };
 
     struct Node
     {
@@ -310,154 +112,566 @@ private:
         Vertex m_blossom;
 
         int m_clearToken;
+
+        Vertex bridgeV;
+        Vertex bridgeW;
+
+        void reset() {
+            m_depth = 0;
+            m_parent = m_blossom = 0;
+            bridgeV = bridgeW = 0;
+            m_clearToken = 0;
+        }
     };
 
-    std::vector<Node> m_tree;
-
-    std::vector<std::pair<Vertex, Vertex>> m_bridges;
-};
-
-namespace
-{
-struct PairHash
-{
-public:
-    template <typename T, typename U>
-    std::size_t operator()(const std::pair<T, U> &x) const
+    struct MeshFace
     {
-        auto hashT = std::hash<T>{}(x.first);
-        auto hashU = std::hash<U>{}(x.second);
-        return hashT ^ (hashU + 0x9e3779b9 + (hashT << 6) + (hashT >> 2));
-    }
-};
-
-bool canMergeTrianglesToQuad(__m128 v0, __m128 v1, __m128 v2, __m128 v3)
-{
-    // Maximum distance of vertices from original plane in world space units
-    float maximumDepthError = 0.5f;
-
-    __m128 n0 = normalize(normal(v0, v1, v2));
-    __m128 planeDistA = _mm_andnot_ps(_mm_set1_ps(-0.0f), _mm_dp_ps(n0, _mm_sub_ps(v1, v3), 0x7F));
-    if (_mm_comigt_ss(planeDistA, _mm_set1_ps(maximumDepthError)))
-    {
-        return false;
-    }
-
-    __m128 n2 = normalize(normal(v2, v3, v0));
-    __m128 planeDistB = _mm_andnot_ps(_mm_set1_ps(-0.0f), _mm_dp_ps(n2, _mm_sub_ps(v1, v3), 0x7F));
-    if (_mm_comigt_ss(planeDistB, _mm_set1_ps(maximumDepthError)))
-    {
-        return false;
-    }
-
-    return true;
-}
-
-uint64_t LongAppend(uint32_t high, uint32_t low)
-{
-    return (uint64_t)high << 32 | low;
-}
-
-} // namespace
-
-namespace common
-{
-std::vector<uint32_t> QuadDecomposition::decompose(const std::vector<uint32_t> &indices, const std::vector<__m128> &vertices)
-{
-    std::vector<uint32_t> result;
-
-    size_t triangleCount = indices.size() / 3;
-
-    Graph candidateGraph;
-    candidateGraph.m_adjacencyList.resize(triangleCount);
-
-    std::unordered_map<uint64_t, std::vector<std::pair<uint32_t, uint32_t>>> edgeToTriangle;
-    for (uint32_t triangleIdx = 0; triangleIdx < triangleCount; ++triangleIdx)
-    {
-        uint32_t i[3];
-        i[0] = indices[3 * triangleIdx + 0];
-        i[1] = indices[3 * triangleIdx + 1];
-        i[2] = indices[3 * triangleIdx + 2];
-
-        edgeToTriangle[LongAppend(i[0], i[1])].push_back(std::make_pair(triangleIdx, i[2]));
-        edgeToTriangle[LongAppend(i[1], i[2])].push_back(std::make_pair(triangleIdx, i[0]));
-        edgeToTriangle[LongAppend(i[2], i[0])].push_back(std::make_pair(triangleIdx, i[1]));
-
-        for (int edgeIdx = 0; edgeIdx < 3; ++edgeIdx)
+        MeshFace() {}
+        void init(int id, MeshVertex* v0, MeshVertex* v1, MeshVertex* v2)
         {
-            uint64_t f = LongAppend(i[(edgeIdx + 1) % 3], i[edgeIdx]);
-            auto &neighbors = edgeToTriangle[f];
-            for (auto pair : neighbors)
+            faceId = id;
+
+            Vertices[0] = v0;
+            Vertices[1] = v1;
+            Vertices[2] = v2;
+            for (int i = 0; i < 3; i++)
             {
-                uint32_t neighborTriangle = pair.first;
-                uint32_t apex = pair.second;
+                auto e = &Edges[i];
+                e->face = this;
+                e->start = Vertices[i];
+                e->vertIdx = e->start->vIdx;
+                e->end = Vertices[(i+1)%3];
+                e->apex = Vertices[(i + 2) % 3];
+                e->next = nullptr;
+                Vertices[i]->addVertexEdge(e);
+            }
+            pairFace = -1;
+            neighbors.clear();
+            GraphNode.reset();
+        }
+        int faceId = 0;
+        MeshFaceEdge Edges[3];
 
-                uint32_t quad[] = {i[edgeIdx], apex, i[(edgeIdx + 1) % 3], i[(edgeIdx + 2) % 3]};
+        MeshVertex* Vertices[3] = { nullptr };
 
-                if (canMergeTrianglesToQuad(vertices[quad[0]], vertices[quad[1]], vertices[quad[2]], vertices[quad[3]]))
+        __m128 unitNormal;// 0 = normalize(normal(v0, v1, v2));
+
+        Node GraphNode;
+        std::vector<Vertex> neighbors;
+        int pairFace = -1;
+    };
+
+    struct MeshQuad
+    {
+        MeshFaceEdge * faceEdge1;
+        MeshFaceEdge * faceEdge2;
+
+        MeshQuad() {}
+        void init(MeshFaceEdge*e1, MeshFaceEdge*e2)
+        {
+            this->faceEdge1 = e1;
+            this->faceEdge1 = e2;
+        }
+
+        __m128 faceNormalSum;
+        //unsigned int bestCentroid;
+        float* pNormal;
+
+        static inline bool compareX(MeshQuad* const &rhs, MeshQuad* const &lhs)
+        {
+            return (rhs->pNormal[0] < lhs->pNormal[0]);
+        }
+        static inline bool compareY(MeshQuad* const &rhs, MeshQuad* const &lhs)
+        {
+            return (rhs->pNormal[1] < lhs->pNormal[1]);
+        }
+        static inline bool compareZ(MeshQuad* const &rhs, MeshQuad* const &lhs)
+        {
+            return (rhs->pNormal[2] < lhs->pNormal[2]);
+        }
+
+        int getFirstVertex()
+        {
+            if (faceEdge1 != faceEdge2) return faceEdge1->start->vIdx;
+            return faceEdge1->face->Vertices[0]->vIdx;
+        }
+    };
+
+    static	std::vector<MeshFace*> Faces;
+    static	std::vector<MeshVertex*> Vertices;
+    static	std::vector<MeshQuad*> Quads;
+    static	std::vector<MeshQuad*> QuadsKeys;
+
+    class Matching
+    {
+    public:
+        Matching(int faceNum) : m_clearToken(0)
+        {
+            // Start with a greedy maximal matching
+            for (Vertex v = 0; v < faceNum; ++v)
+            {
+                if (Faces[v]->pairFace == -1)
                 {
-                    candidateGraph.m_adjacencyList[triangleIdx].push_back(neighborTriangle);
-                    candidateGraph.m_adjacencyList[neighborTriangle].push_back(triangleIdx);
+                    for (auto w : Faces[v]->neighbors)
+                    {
+                        if (Faces[w]->pairFace == -1)
+                        {
+                            match(v, w);
+                            break;
+                        }
+                    }
                 }
             }
-        }
-    }
-
-    uint32_t quadCount = 0;
-
-    Matching matching(candidateGraph);
-
-    for (uint32_t triangleIdx = 0; triangleIdx < triangleCount; ++triangleIdx)
-    {
-        int neighbor = matching.getMatchedVertex(triangleIdx);
-
-        // No quad found
-        if (neighbor == -1)
-        {
-            auto i0 = indices[3 * triangleIdx + 0];
-            auto i1 = indices[3 * triangleIdx + 1];
-            auto i2 = indices[3 * triangleIdx + 2];
-
-            result.push_back(i0);
-            result.push_back(i2);
-            result.push_back(i1);
-            result.push_back(i0);
-        }
-        else if (triangleIdx < uint32_t(neighbor))
-        {
-            uint32_t i[3];
-            i[0] = indices[3 * triangleIdx + 0];
-            i[1] = indices[3 * triangleIdx + 1];
-            i[2] = indices[3 * triangleIdx + 2];
-
-            // Find out which edge was matched
-            bool found = false;
-            for (uint32_t edgeIdx = 0; edgeIdx < 3; ++edgeIdx)
+            std::vector<Vertex> path;
+            for (Vertex v = 0; v < faceNum; ++v)
             {
-                auto f = LongAppend(i[(edgeIdx + 1) % 3], i[edgeIdx]);
-                auto &neighbors = edgeToTriangle[f];
-                for (auto pair : neighbors)
+                if (Faces[v]->pairFace == -1)
                 {
-                    if (pair.first == neighbor)
+                    if (findAugmentingPath(v, path))
                     {
-                        result.push_back(i[edgeIdx]);
-                        result.push_back(i[(edgeIdx + 2) % 3]);
-                        result.push_back(i[(edgeIdx + 1) % 3]);
-                        result.push_back(pair.second);
-
-                        quadCount++;
-                        found = true;
-                        break;
-                    }
-                    if (found)
-                    {
-                        break;
+                        augment(path);
+                        path.clear();
                     }
                 }
             }
         }
+
+        Vertex getMatchedVertex(Vertex v)
+        {
+            return Faces[v]->pairFace;
+        }
+
+    private:
+        void match(Vertex v, Vertex w)
+        {
+            Faces[v]->pairFace = w;
+            Faces[w]->pairFace = v;
+        }
+
+        void augment(std::vector<Vertex> &path)
+        {
+            for (int i = 0; i < path.size(); i += 2)
+            {
+                match(path[i], path[i + 1]);
+            }
+        }
+
+        bool findAugmentingPath(Vertex root, std::vector<Vertex> &path)
+        {
+            // Clear out the forest
+            m_clearToken++;
+
+            // Start our tree root
+            Faces[root]->GraphNode.m_depth = 0;
+            Faces[root]->GraphNode.m_parent = -1;
+            Faces[root]->GraphNode.m_clearToken = m_clearToken;
+            Faces[root]->GraphNode.m_blossom = root;
+
+            m_queue.push(root);
+
+            while (!m_queue.empty())
+            {
+                Vertex v = m_queue.front();
+                m_queue.pop();
+
+                for (auto w : Faces[v]->neighbors)
+                {
+                    if (examineEdge(root, v, w, path))
+                    {
+                        while (!m_queue.empty())
+                        {
+                            //std::cout << "clearing " << m_queue.size() << std::endl;
+                            std::queue<Vertex> empty;
+                            std::swap(m_queue, empty);
+                        }
+
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        bool examineEdge(Vertex root, Vertex v, Vertex w, std::vector<Vertex> &path)
+        {
+            Vertex vBar = find(v);
+            Vertex wBar = find(w);
+
+            if (vBar != wBar)
+            {
+                if (Faces[wBar]->GraphNode.m_clearToken != m_clearToken)
+                {
+                    if (Faces[w]->pairFace == -1)
+                    {
+                        buildAugmentingPath(root, v, w, path);
+                        return true;
+                    }
+                    else
+                    {
+                        extendTree(v, w);
+                    }
+                }
+                else if (Faces[wBar]->GraphNode.m_depth % 2 == 0)
+                {
+                    shrinkBlossom(v, w);
+                }
+            }
+
+            return false;
+        }
+
+        void buildAugmentingPath(Vertex root, Vertex v, Vertex w, std::vector<Vertex> &path)
+        {
+            path.push_back(w);
+            findPath(v, root, path);
+        }
+
+        void extendTree(Vertex v, Vertex w)
+        {
+            Vertex u = Faces[w]->pairFace;
+
+            Node &nodeV = Faces[v]->GraphNode;
+            Node &nodeW = Faces[w]->GraphNode;
+            Node &nodeU = Faces[u]->GraphNode;
+
+            nodeW.m_depth = nodeV.m_depth + 1 + (nodeV.m_depth & 1); // Must be odd, so we add either 1 or 2
+            nodeW.m_parent = v;
+            nodeW.m_clearToken = m_clearToken;
+            nodeW.m_blossom = w;
+
+            nodeU.m_depth = nodeW.m_depth + 1;
+            nodeU.m_parent = w;
+            nodeU.m_clearToken = m_clearToken;
+            nodeU.m_blossom = u;
+
+            m_queue.push(u);
+        }
+
+        void shrinkBlossom(Vertex v, Vertex w)
+        {
+            Vertex b = findCommonAncestor(v, w);
+
+            shrinkPath(b, v, w);
+            shrinkPath(b, w, v);
+        }
+
+        void shrinkPath(Vertex b, Vertex v, Vertex w)
+        {
+            Vertex u = find(v);
+
+            while (u != b)
+            {
+                makeUnion(b, u);
+                assert(u != -1);
+                assert(Faces[u]->pairFace != -1);
+                u = Faces[u]->pairFace;
+                makeUnion(b, u);
+                makeRepresentative(b);
+                m_queue.push(u);
+                Faces[u]->GraphNode.bridgeV = v;
+                Faces[u]->GraphNode.bridgeW = w;
+
+                //m_bridges[u] = std::make_pair(v, w);
+                u = find(Faces[u]->GraphNode.m_parent);
+            }
+        }
+
+        Vertex findCommonAncestor(Vertex v, Vertex w)
+        {
+            while (w != v)
+            {
+                if (Faces[v]->GraphNode.m_depth > Faces[w]->GraphNode.m_depth)
+                {
+                    v = Faces[v]->GraphNode.m_parent;
+                }
+                else
+                {
+                    w = Faces[w]->GraphNode.m_parent;
+                }
+            }
+
+            return find(v);
+        }
+
+        void findPath(Vertex s, Vertex t, Path &path)
+        {
+            if (s == t)
+            {
+                path.push_back(s);
+            }
+            else if (Faces[s]->GraphNode.m_depth % 2 == 0)
+            {
+                path.push_back(s);
+                path.push_back(Faces[s]->pairFace);
+                findPath(Faces[Faces[s]->pairFace]->GraphNode.m_parent, t, path);
+            }
+            else
+            {
+                Vertex v = 0, w = 0;
+                v = Faces[s]->GraphNode.bridgeV;
+                w = Faces[s]->GraphNode.bridgeW;
+                //            std::tie(v, w) = m_bridges[s];
+
+                path.push_back(s);
+
+                size_t offset = path.size();
+                findPath(v, Faces[s]->pairFace, path);
+                std::reverse(path.begin() + offset, path.end());
+
+                findPath(w, t, path);
+            }
+        }
+
+        void makeUnion(int x, int y)
+        {
+            int xRoot = find(x);
+            Faces[xRoot]->GraphNode.m_blossom = find(y);
+        }
+
+        void makeRepresentative(int x)
+        {
+            int xRoot = find(x);
+            Faces[xRoot]->GraphNode.m_blossom = x;
+            Faces[x]->GraphNode.m_blossom = x;
+        }
+
+        int find(int x)
+        {
+            if (Faces[x]->GraphNode.m_clearToken != m_clearToken)
+            {
+                return x;
+            }
+
+            if (x != Faces[x]->GraphNode.m_blossom)
+            {
+                // Path compression
+                Faces[x]->GraphNode.m_blossom = find(Faces[x]->GraphNode.m_blossom);
+            }
+
+            return Faces[x]->GraphNode.m_blossom;
+        }
+
+    private:
+        int m_clearToken;
+
+
+        std::queue<Vertex> m_queue;
+
+
+
+        //std::vector<std::pair<Vertex, Vertex>> m_bridges;
+    };
+
+    static const unsigned int PoolUnit = 10;
+
+
+    static void requestSpawn(int vertCount, int triangleCount)
+    {
+        while(Faces.size() < triangleCount)
+        {
+            MeshFace* f = new MeshFace[1 << PoolUnit];
+            for (int idx = 0; idx < 1 << PoolUnit; idx++)
+                Faces.push_back(&f[idx]);
+
+        }
+
+        while (Vertices.size() < vertCount)
+        {
+            MeshVertex* v = new MeshVertex[1 << PoolUnit];
+            for (int idx = 0; idx < 1 << PoolUnit; idx++)
+                Vertices.push_back(&v[idx]);
+
+        }
+    }
+    static MeshQuad* spawnMeshQuad(int idx)
+    {
+        while (Quads.size() <= idx)
+        {
+            MeshQuad* q = new MeshQuad[1<< PoolUnit];
+            QuadsKeys.push_back(&q[0]);
+
+            for (int idx = 0; idx < 1 << PoolUnit; idx++)
+                Quads.push_back(&q[idx]);
+        }
+        return Quads[idx];
     }
 
-    return result;
-}
+    void QuadDecomposition::release()
+    {
+        for (int idx = 0; idx < QuadsKeys.size(); idx++)
+            delete[] QuadsKeys[idx];
+        QuadsKeys.clear();
+        Quads.clear();
+
+        for (int idx = 0; idx < Vertices.size()>> PoolUnit; idx++)
+            delete[] Vertices[idx<< PoolUnit];
+        Vertices.clear();
+
+        for (int idx = 0; idx < Faces.size() >> PoolUnit; idx++)
+            delete[] Faces[idx << PoolUnit];
+        Faces.clear();
+    }
+
+
+
+    static bool canMergeTrianglesToQuadV2(MeshFace* f1, MeshFace*f2,  __m128 v1, __m128 v3)
+    {
+        // Maximum distance of vertices from original plane in world space units
+        float maximumDepthError = 0.5f;
+
+        auto v1v3 = _mm_sub_ps(v1, v3);
+        __m128 planeDistA = _mm_andnot_ps(_mm_set1_ps(-0.0f), _mm_dp_ps(f1->unitNormal, v1v3, 0x7F));
+        if (_mm_comigt_ss(planeDistA, _mm_set1_ps(maximumDepthError)))
+        {
+            return false;
+        }
+
+        __m128 planeDistB = _mm_andnot_ps(_mm_set1_ps(-0.0f), _mm_dp_ps(f2->unitNormal, v1v3, 0x7F));
+        if (_mm_comigt_ss(planeDistB, _mm_set1_ps(maximumDepthError)))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    static void matchFaceEdge(MeshFace * face1, MeshFace * face2, MeshFaceEdge *& faceEdge1, MeshFaceEdge *& faceEdge2)
+    {
+        for (int idx = 0; idx < 3; idx++)
+        {
+            faceEdge1 = &face1->Edges[idx];
+            for (int j = 0; j < 3; j++)
+            {
+                faceEdge2 = &face2->Edges[j];
+                if (faceEdge1->start == faceEdge2->end &&
+                    faceEdge1->end == faceEdge2->start)
+                {
+                    return;
+                }
+            }
+        }
+        faceEdge1 = nullptr;
+        faceEdge2 = nullptr;
+    }
+
+    static void fillInVertices(__m128 * orderedVertices, MeshQuad * q, const std::vector<__m128> &vertices)
+    {
+        auto faceEdge1 = q->faceEdge1;
+        auto faceEdge2 = q->faceEdge2;
+        if (faceEdge1 != faceEdge2)
+        {
+            orderedVertices[0] = vertices[faceEdge1->start->vIdx];
+            orderedVertices[1] = vertices[faceEdge1->apex->vIdx];
+            orderedVertices[2] = vertices[faceEdge1->end->vIdx];
+            orderedVertices[3] = vertices[faceEdge2->apex->vIdx];
+        }
+        else
+        {
+            auto& vs = faceEdge1->face->Vertices;
+            orderedVertices[0] = vertices[vs[0]->vIdx];
+            orderedVertices[1] = vertices[vs[2]->vIdx];
+            orderedVertices[2] = vertices[vs[1]->vIdx];
+            orderedVertices[3] = vertices[vs[0]->vIdx];
+        }
+    }
+
+    std::vector<uint32_t> QuadDecomposition::decompose(const std::vector<uint32_t> &indices, const std::vector<__m128> &vertices)
+    {
+        std::vector<uint32_t> result;
+        size_t triangleCount = indices.size() / 3;
+        size_t vertCount = vertices.size();
+
+        requestSpawn(vertCount, triangleCount);
+
+        for (int idx = 0; idx < vertCount; idx++)
+        {
+            Vertices[idx]->init(idx);
+        }
+        int vIdx = 0;
+        for (int idx = 0; idx < triangleCount; idx++)
+        {
+            auto v0 = Vertices[indices[vIdx++]];
+            auto v1 = Vertices[indices[vIdx++]];
+            auto v2 = Vertices[indices[vIdx++]];
+            Faces[idx]->init(idx, v0, v1, v2);
+        }
+
+        for (uint32_t triangleIdx = 0; triangleIdx < triangleCount; ++triangleIdx)
+        {
+            MeshFace * f = Faces[triangleIdx];
+            f->unitNormal =  normalize(normal(vertices[f->Vertices[0]->vIdx],
+                                              vertices[f->Vertices[1]->vIdx],
+                                              vertices[f->Vertices[2]->vIdx]));
+        }
+        int facePairIdx = 0;
+        for (uint32_t triangleIdx = 0; triangleIdx < triangleCount; ++triangleIdx)
+        {
+            MeshFace * f = Faces[triangleIdx];
+
+            for (int edgeIdx = 0; edgeIdx < 3; ++edgeIdx)
+            {
+                auto fv = f->Vertices[edgeIdx];
+                MeshFaceEdge* fe = &f->Edges[edgeIdx];
+
+                auto neighbors = fe->end->edgeList;
+                for (auto e = neighbors; e != nullptr; e = e->next)
+                {
+                    if (e->end == fv && e->face->faceId <= f->faceId)
+                    {
+                        if (canMergeTrianglesToQuadV2(f, e->face,
+                                                      vertices[fe->apex->vIdx],
+                                                      vertices[e->apex->vIdx]))
+                        {
+                            f->neighbors.push_back(e->face->faceId);
+                            e->face->neighbors.push_back(triangleIdx);
+                        }
+                    }
+                }
+            }
+        }
+
+        Matching matching(triangleCount);
+        int quadIdx = 0;
+        for (uint32_t triangleIdx = 0; triangleIdx < triangleCount; ++triangleIdx)
+        {
+            int neighbor = matching.getMatchedVertex(triangleIdx);
+
+            // No quad found
+            if (neighbor == -1)
+            {
+                auto q = spawnMeshQuad(quadIdx++); //0  2 1 0
+                q->faceEdge1 = &Faces[triangleIdx]->Edges[0];
+                q->faceEdge2 = q->faceEdge1;
+                result.push_back(q->faceEdge1->start->vIdx);
+                result.push_back(q->faceEdge1->apex->vIdx);
+                result.push_back(q->faceEdge1->end->vIdx);
+                result.push_back(q->faceEdge1->start->vIdx);
+            }
+            else if (triangleIdx < uint32_t(neighbor))
+            {
+                MeshFace * face1 = Faces[triangleIdx];
+                MeshFace * face2 = Faces[neighbor];
+                MeshFaceEdge * faceEdge1;
+                MeshFaceEdge * faceEdge2;
+                matchFaceEdge(face1, face2, faceEdge1, faceEdge2);
+
+                if (faceEdge1 != nullptr && faceEdge2 != nullptr)
+                {
+                    auto q = spawnMeshQuad(quadIdx++);
+                    q->faceEdge1 = faceEdge1;
+                    q->faceEdge2 = faceEdge2;
+                    result.push_back(q->faceEdge1->start->vIdx);
+                    result.push_back(q->faceEdge1->apex->vIdx);
+                    result.push_back(q->faceEdge1->end->vIdx);
+                    result.push_back(q->faceEdge2->apex->vIdx);
+                }
+            }
+        }
+
+        return result;
+    }
+
+
+
 } // namespace common
