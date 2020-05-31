@@ -24,6 +24,7 @@ Confidential and Proprietary - Qualcomm Technologies, Inc.
 namespace
 {
     using namespace common;
+    static const unsigned int POOL_SIZE = 1024;
     static const unsigned int TIMEOUT = 5;
     static const unsigned int MAX_ITERATION = 100;
     static const double QUADRIC_EPSILON = 1e-15;
@@ -34,6 +35,7 @@ namespace
 
     struct Edge;
     struct Face;
+    struct FaceNode;
 
     struct Vertex
     {
@@ -57,26 +59,32 @@ namespace
         // Quadric Matrix
         SymetricMatrix Q;
 
-        // adjacent faces
-        std::vector<Face *> Neighbors;
+        // adjacent face list
+        FaceNode *Neighbors = nullptr;
 
         // adjacent edges
         std::list<Edge *> Edges;
 
         void reset()
         {
-            Neighbors.clear();
             Edges.clear();
             LOCAL_MARK = 0;
-            ToUpdateEdge = nullptr;
             ID = 0;
+            ToUpdateEdge = nullptr;
+            Neighbors = nullptr;
             Removed = false;
             Q.reset();
+        }
+
+        static inline bool comparefunc(Vertex* const &lhs, Vertex* const &rhs)
+        {
+            return (lhs->Pos < rhs->Pos);
         }
     };
 
     struct Edge
     {
+        Edge() : NextEdge(ToBeReplaced) {}
         Edge(Vertex *v0, Vertex *v1) : Start(v0), End(v1), NextEdge(ToBeReplaced) {}
 
         // start & end vertex
@@ -116,11 +124,6 @@ namespace
             return (Start == v) || (End == v);
         }
 
-        bool containVertex(Vertex *start, Vertex *end)
-        {
-            return (Start == start && End == end) || (Start == end && End == start);
-        }
-
         void init(Vertex *start, Vertex *end)
         {
             // update vertices
@@ -136,6 +139,12 @@ namespace
             HeapIndex = -1;
             ToBeReplaced = nullptr;
         }
+    };
+
+    struct FaceNode
+    {
+        Face *Instance = nullptr;
+        FaceNode *Next = nullptr;
     };
 
     struct Face
@@ -160,15 +169,19 @@ namespace
         Vertex *Vertices[3] = {nullptr};
 
         // edges
-        Edge *Edges[3] = {0};
+        Edge *Edges[3] = {nullptr};
 
         // valid & dirty(need to update)
         bool Valid = true;
+
+        // related face node
+        FaceNode FaceNodes[3];
 
         // collapse property for fast simplification
         uint16_t OptEdge = 0;
         unsigned int LOCAL_MARK = 0; //to check whether face are updated for current iteration
 
+        // Priority
         double priority = 0;
 
         // get connected edges
@@ -317,6 +330,19 @@ namespace
             getEdges(start, end, sEdge, eEdge);
             sEdge->ToBeReplaced = eEdge;
             return sEdge;
+        }
+
+        Vertex* getRestVertex(Vertex *v0, Vertex *v1)
+        {
+            if (Vertices[0] != v0 && Vertices[0] != v1)
+            {
+                return Vertices[0];
+            }
+            if (Vertices[1] != v0 && Vertices[1] != v1)
+            {
+                return Vertices[1];
+            }
+            return Vertices[2];
         }
     };
 
@@ -469,17 +495,22 @@ namespace
             {
                 if (Container[left]->Priority < e->Priority)
                 {
-                    smallest = left;
+                    if (right < Length && Container[right]->Priority < Container[left]->Priority)
+                    {
+                        smallest = right;
+                    }
+                    else
+                    {
+                        smallest = left;
+                    }
                 }
-
-                if (right < Length && Container[right]->Priority < Container[smallest]->Priority)
+                else if (right < Length && Container[right]->Priority < e->Priority)
                 {
                     smallest = right;
                 }
-
-                // already the smallest
-                if (smallest == pos)
+                else
                 {
+                    Container[pos] = e;
                     e->HeapIndex = pos;
                     return;
                 }
@@ -511,7 +542,6 @@ namespace
 
         // Face pool to reduce memory reallocation
         static std::vector<Face *> FacePool;
-        static uint32_t FacePoolIdx;
 
         // Edge pool to reduce memory reallocation
         static std::vector<Edge *> EdgePool;
@@ -519,66 +549,66 @@ namespace
 
         // Edge pool to reduce memory reallocation
         static std::vector<Vertex *> VertexPool;
-        static uint32_t VertexPoolIdx;
 
         static void reset()
         {
             GLOBAL_MARK = 0;
             ScaleFactor = 1.0;
             EdgePoolIdx = 0;
-            VertexPoolIdx = 0;
-            FacePoolIdx = 0;
-        }
-
-        // get vertex from pool, create one if not exists
-        static Vertex* spawnVertexFromPool()
-        {
-            if (VertexPoolIdx >= VertexPool.size())
-            {
-                VertexPool.push_back(new Vertex());
-                return VertexPool[VertexPoolIdx++];
-            }
-
-            // use one in the pool
-            auto vert = VertexPool[VertexPoolIdx++];
-            vert->reset();
-            return vert;
-        }
-
-        // get face from pool, create one if not exists
-        static Face* spawnFaceFromPool()
-        {
-            if (FacePoolIdx >= FacePool.size())
-            {
-                FacePool.push_back(new Face());
-                return FacePool[FacePoolIdx++];
-            }
-            auto face = FacePool[FacePoolIdx++];
-            face->reset();
-            return face;
-        }
-
-        static void reserveFacePool(unsigned int nFace)
-        {
-            if (FacePool.capacity() < nFace)
-            {
-                FacePool.reserve(nFace);
-            }
         }
 
         static Edge *spawnEdgeFromPool(Vertex *v0, Vertex *v1)
         {
-            if (EdgePool.size() > EdgePoolIdx)
+            if (EdgePoolIdx >= EdgePool.size())
             {
-                Edge *e = EdgePool[EdgePoolIdx++];
-                e->init(v0, v1);
-                return e;
+                Edge* pool = new Edge[POOL_SIZE];
+                for (int idx = 0; idx < POOL_SIZE; idx++)
+                {
+                    EdgePool.push_back(&pool[idx]);
+                }
             }
 
-            auto edge = new Edge(v0, v1);
-            EdgePool.push_back(edge);
-            EdgePoolIdx++;
-            return edge;
+            Edge* e = EdgePool[EdgePoolIdx++];
+            e->init(v0, v1);
+            return e;
+        }
+
+        static void reservePool(int nVert, int nFace)
+        {
+            VertexPool.reserve(nVert);
+            FacePool.reserve(nFace);
+
+            // allocate memory for vertex
+            while (VertexPool.size() < nVert)
+            {
+                Vertex *v = new Vertex[POOL_SIZE];
+                for (unsigned int i_vert = 0; i_vert < POOL_SIZE; ++i_vert)
+                {
+                    VertexPool.push_back(&v[i_vert]);
+                }
+            }
+
+            // reset
+            for (unsigned int i_vert = 0; i_vert < nVert; ++i_vert)
+            {
+                VertexPool[i_vert]->reset();
+            }
+
+            // allocate memory for face
+            while (FacePool.size() < nFace)
+            {
+                Face *f = new Face[POOL_SIZE];
+                for (unsigned int i_face = 0; i_face < POOL_SIZE; ++i_face)
+                {
+                    FacePool.push_back(&f[i_face]);
+                }
+            }
+
+            // reset
+            for (unsigned int i_face = 0; i_face < nFace; ++i_face)
+            {
+                FacePool[i_face]->reset();
+            }
         }
 
         // cost = VT * Q * V
@@ -601,8 +631,9 @@ namespace
 
             // for each face related to start vertex
             double minQual = 1;
-            for (auto face : start->Neighbors)
+            for (auto node = start->Neighbors; node != nullptr; node = node->Next)
             {
+                auto face = node->Instance;
                 if (!face->Valid || face->containVertex(end))
                 {
                     continue;
@@ -617,8 +648,9 @@ namespace
             }
 
             // for each face related to end vertex
-            for (auto face : end->Neighbors)
+            for (auto node = end->Neighbors; node != nullptr; node = node->Next)
             {
+                auto face = node->Instance;
                 if (!face->Valid || face->containVertex(start))
                 {
                     continue;
@@ -721,8 +753,9 @@ namespace
             {
                 return false;
             }
-            for (auto neighbor : start->Neighbors)
+            for (auto node = start->Neighbors; node != nullptr; node = node->Next)
             {
+                auto neighbor = node->Instance;
                 if (!neighbor->Valid)
                 {
                     continue;
@@ -752,48 +785,6 @@ namespace
             return false;
         }
 
-        static void removeInvalidFace(std::vector<Face *> &faces)
-        {
-            if (faces.empty())
-            {
-                return;
-            }
-            int frontIdx = 0;
-            int backIdx = faces.size() - 1;
-            for (; frontIdx <= backIdx; ++frontIdx)
-            {
-                auto face = faces[frontIdx];
-                if (face->Valid == false)
-                {
-                    bool swap = false;
-                    for (; backIdx > frontIdx; --backIdx)
-                    {
-                        if (faces[backIdx]->Valid)
-                        {
-                            faces[frontIdx] = faces[backIdx];
-                            faces[backIdx] = face;
-                            --backIdx;
-                            swap = true;
-                            break;
-                        }
-                    }
-                    if (swap == false)
-                    {
-                        break;
-                    }
-                }
-            }
-            frontIdx = std::min(frontIdx, backIdx);
-            if (faces[frontIdx]->Valid)
-            {
-                faces.resize(frontIdx + 1);
-            }
-            else
-            {
-                faces.resize(frontIdx);
-            }
-        }
-
         static unsigned int update(Face &face)
         {
             // get vertices
@@ -806,27 +797,14 @@ namespace
                 return 0;
             }
 
-            //prefer to use the one with larger capacity
-            if (v0->Neighbors.capacity() < v1->Neighbors.capacity())
-            {
-                std::swap(v0, v1);
-            }
-
-            GLOBAL_MARK++;
             // mark as Removed
             v1->Removed = true;
 
-            // use v0 to store new vertex
-            v0->Pos = optPos;
-
-            // update v0
-            v0->Q += v1->Q;
-            v0->LOCAL_MARK = GLOBAL_MARK;
-
             // update v1 faces
             unsigned int nDeleted = 0;
-            for (auto f : v1->Neighbors)
+            for (auto node = v1->Neighbors; node != nullptr; node = node->Next)
             {
+                auto f = node->Instance;
                 if (!f->Valid)
                 {
                     continue;
@@ -838,31 +816,44 @@ namespace
                     nDeleted++;
                     f->Valid = false;
                     f->replaceEdge(v0, v1);
+
+                    auto v2 = f->getRestVertex(v0, v1);
+                    // v2->Neighbors->clear();
+                    removeInvalidFace(v2);
+                    if(v2->Neighbors == nullptr)
+                    {
+                        v2->Removed = true;
+                    }
                 }
             }
-
-            // remove invalid face of v0's neighbors
-            removeInvalidFace(v0->Neighbors);
-
-            // replace v1's neighbors by ToBeReplaced edge
-            for (auto f : v1->Neighbors)
+            // v0->Neighbors = v0->Neighbors->import(v1);
+            importVertexNeighbors(v0, v1);
+            if (v0->Neighbors == nullptr)
             {
-                if (!f->Valid)
-                {
-                    continue;
-                }
+                v0->Removed = true;
+                return nDeleted;
+            }
 
+            GLOBAL_MARK++;
+            // use v0 to store new vertex
+            v0->Pos = optPos;
+
+            // update v0
+            v0->Q += v1->Q;
+            v0->LOCAL_MARK = GLOBAL_MARK;
+            for (auto node = v1->Neighbors; node != nullptr; node = node->Next)
+            {
+                auto f = node->Instance;
                 f->replace(v1, v0);
                 f->replaceDuplicatedEdge();
-
-                // add to v0
-                v0->Neighbors.push_back(f);
             }
 
             // increase GLOBAL_MARK to update the faces
             GLOBAL_MARK++;
-            for (auto f : v0->Neighbors)
+            for (auto node = v0->Neighbors; node != nullptr; node = node->Next)
             {
+                auto f = node->Instance;
+
                 // mark face as dirty
                 f->LOCAL_MARK = GLOBAL_MARK;
 
@@ -885,18 +876,13 @@ namespace
             Vertex *v1 = edge.End;
 
             //prefer to use the one with larger capacity
-            if (v0->Neighbors.capacity() < v1->Neighbors.capacity())
-            {
-                std::swap(v0, v1);
-            }
-
-            //prefer to use the one with larger capacity
             v1->Removed = true;
 
             // update v1 faces
             unsigned int nDeleted = 0;
-            for (auto f : v1->Neighbors)
+            for (auto node = v1->Neighbors; node != nullptr; node = node->Next)
             {
+                auto f = node->Instance;
                 if (!f->Valid)
                 {
                     continue;
@@ -913,17 +899,34 @@ namespace
                     {
                         heap.pop(v2v1);
                     }
+
+                    auto v2 = f->getRestVertex(v0, v1);
+                    // v2->Neighbors->clear();
+                    removeInvalidFace(v2);
+                    if (!v2->Neighbors->Instance->Valid)
+                    {
+                        v2->Neighbors = v2->Neighbors->Next;
+                    }
+
+                    if (v2->Neighbors == nullptr) {
+                        v2->Removed = true;
+                    }
                     nDeleted++;
                     continue;
                 }
             }
 
-            // remove invalid face of v0's neighbors
-            removeInvalidFace(v0->Neighbors);
+            // v0->Neighbors = v0->Neighbors->import(v1);
+            importVertexNeighbors(v0, v1);
+            if (v0->Neighbors == nullptr) {
+                v0->Removed = true;
+                return nDeleted;
+            }
 
             // update v0 neighbors
-            for (auto f : v1->Neighbors)
+            for (auto node = v1->Neighbors; node != nullptr; node = node->Next)
             {
+                auto f = node->Instance;
                 if (!(f)->Valid)
                 {
                     continue;
@@ -932,14 +935,6 @@ namespace
                 // replace
                 f->replace(v1, v0);
                 f->replaceDuplicatedEdge();
-                v0->Neighbors.push_back(f);
-            }
-
-            // return if v0 is an isolated vertex
-            if (v0->Neighbors.empty())
-            {
-                v0->Removed = true;
-                return nDeleted;
             }
 
             // use v0 to store new vertex
@@ -950,8 +945,9 @@ namespace
             Edge *e1 = nullptr;
             Edge *e2 = nullptr;
             EdgeCache.clear();
-            for (auto f : v0->Neighbors)
+            for (auto node = v0->Neighbors; node != nullptr; node = node->Next)
             {
+                auto f = node->Instance;
                 f->getEdges(v0, e1, e2);
                 syncIntoEdgeCache(e1, v0, EdgeCache);
                 syncIntoEdgeCache(e2, v0, EdgeCache);
@@ -974,7 +970,6 @@ namespace
                     e->Start->ToUpdateEdge = nullptr;
                 }
             }
-            v1->Neighbors.clear();
             return nDeleted;
         }
 
@@ -1019,22 +1014,72 @@ namespace
                 EdgeCache.push_back(e1);
             }
         }
+
+        static void removeInvalidFace(Vertex *v)
+        {
+            auto lastValid = v->Neighbors;
+            for (auto node = lastValid->Next; node != nullptr; node = node->Next)
+            {
+                if (!node->Instance->Valid)
+                {
+                    continue;
+                }
+                lastValid->Next = node;
+                lastValid = node;
+            }
+            lastValid->Next = nullptr;
+        }
+
+        static void importVertexNeighbors(Vertex *v0, Vertex *v1)
+        {
+            auto lastValid = v0->Neighbors;
+            for (auto node = lastValid->Next; node != nullptr; node = node->Next)
+            {
+                if (!node->Instance->Valid) {
+                    continue;
+                }
+                lastValid->Next = node;
+                lastValid = node;
+            }
+
+            while (v1->Neighbors != nullptr && v1->Neighbors->Instance->Valid == false)
+            {
+                v1->Neighbors = v1->Neighbors->Next;
+            }
+            lastValid->Next = v1->Neighbors;
+            if (v1->Neighbors != nullptr)
+            {
+                for (auto node = lastValid->Next; node != nullptr; node = node->Next)
+                {
+                    if (!node->Instance->Valid)
+                    {
+                        continue;
+                    }
+                    lastValid->Next = node;
+                    lastValid = node;
+                }
+                lastValid->Next = nullptr;
+            }
+
+            if (v0->Neighbors->Instance->Valid == false)
+            {
+                v0->Neighbors = v0->Neighbors->Next;
+            }
+        }
     };
 
     // data section
     unsigned int CollapseHelper::GLOBAL_MARK = 0;
     double CollapseHelper::ScaleFactor = 1.0;
 
+    // pool
+    std::vector<Vertex *> CollapseHelper::VertexPool;
     std::vector<Face *> CollapseHelper::FacePool;
-    uint32_t CollapseHelper::FacePoolIdx = 0;
-
     std::vector<Edge *> CollapseHelper::EdgePool;
     uint32_t CollapseHelper::EdgePoolIdx = 0;
 
-    std::vector<Vertex *> CollapseHelper::VertexPool;
-    uint32_t CollapseHelper::VertexPoolIdx = 0;
-
-    class MeshReducerPrivate {
+    class MeshReducerPrivate
+    {
     public:
         MeshReducerPrivate();
         ~MeshReducerPrivate();
@@ -1046,20 +1091,10 @@ namespace
                   unsigned int nInd);
         void store(std::vector<double> &vertices, std::vector<uint16_t> &indices);
 
-        bool isManifoldMesh() const;
+        bool isNonClosedMesh() const;
         bool isValid() const;
-    private:
-        class DuplicateVertexCmp
-        {
-        public:
-            inline bool operator()(Vertex *const &rhs, Vertex *const &lhs)
-            {
-                {
-                    return (rhs->Pos < lhs->Pos);
-                }
-            }
-        };
 
+    private:
         void buildQuadricMatrix();
         void initCollapses();
 
@@ -1078,10 +1113,6 @@ namespace
 
         // Bounding box Diagonal
         double OriginBBoxDiagonal = 0.0;
-
-        // Results
-        std::vector<Vertex *> Results;
-        int NumOfValidFace = 0;
     };
 
     MeshReducerPrivate::MeshReducerPrivate() {}
@@ -1097,7 +1128,6 @@ namespace
         Vertices.clear();
         Faces.clear();
         Edges.clear();
-        Results.clear();
         CollapseHelper::reset();
     }
 
@@ -1126,7 +1156,7 @@ namespace
 
     // TODO: CNECO-2636 Find out whether the index type should change to uint32.
     void MeshReducerPrivate::load(const double *vertices, const uint16_t *indices, unsigned int nVert,
-                             unsigned int nInd)
+                                  unsigned int nInd)
     {
         if (!vertices || !indices || !nVert || !nInd)
         {
@@ -1138,6 +1168,9 @@ namespace
         Vec3 min(std::numeric_limits<double>::max());
         Vec3 max(std::numeric_limits<double>::min());
 
+        // reserve first
+        unsigned int nFace = nInd / 3;
+        CollapseHelper::reservePool(nVert, nFace);
         unsigned int vCounter = 0;
         for (unsigned int i_vert = 0; i_vert < nVert; ++i_vert) {
             double x = vertices[vCounter++];
@@ -1145,7 +1178,7 @@ namespace
             double z = vertices[vCounter++];
 
             // get vertex from pool
-            auto vert = CollapseHelper::spawnVertexFromPool();
+            auto vert = CollapseHelper::VertexPool[i_vert];
             Vertices[i_vert] = vert;
             vert->Pos = Vec3(x, y, z);
             vert->ID = i_vert;
@@ -1167,19 +1200,22 @@ namespace
 
         // build faces
         unsigned int fCounter = 0;
-        unsigned int nFace = nInd / 3;
         Faces.resize(nFace);
-        CollapseHelper::reserveFacePool(nFace);
         Edges.reserve(2 * nFace + 1);
         for (unsigned int idx = 0; idx < nFace; ++idx)
         {
             // get face from pool
-            auto face = CollapseHelper::spawnFaceFromPool();
+            auto face = CollapseHelper::FacePool[idx];
             Faces[idx] = face;
+            // create vertex neighbor list
             for (unsigned int i_vert = 0; i_vert < 3; ++i_vert)
             {
-                face->Vertices[i_vert] = Vertices[indices[fCounter++]];
-                face->Vertices[i_vert]->Neighbors.push_back(face);
+                auto vert = Vertices[indices[fCounter++]];
+                face->Vertices[i_vert] = vert;
+                FaceNode* node = &face->FaceNodes[i_vert];
+                node->Instance = face;
+                node->Next = vert->Neighbors;
+                vert->Neighbors = node;
             }
 
             for (unsigned int i_vert = 0; i_vert < 3; ++i_vert)
@@ -1255,7 +1291,7 @@ namespace
     void MeshReducerPrivate::store(std::vector<double> &vertices, std::vector<uint16_t> &indices)
     {
         unsigned int nValid = 0;
-        for (auto &vert : Results)
+        for (auto &vert : Vertices)
         {
             if (vert->Removed)
             {
@@ -1267,7 +1303,7 @@ namespace
         vertices.resize(nValid * 3);
         unsigned int i_valid = 0;
         unsigned int vCounter = 0;
-        for (auto &vert : Results)
+        for (auto &vert : Vertices)
         {
             if (vert->Removed)
             {
@@ -1280,7 +1316,7 @@ namespace
             vert->ID = i_valid++;
         }
 
-        indices.resize(NumOfValidFace * 3);
+        indices.resize(Faces.size() * 3);
         int faceIndex = 0;
         for (auto face : Faces)
         {
@@ -1288,13 +1324,13 @@ namespace
             {
                 continue;
             }
-            indices[faceIndex++] = Results[face->Vertices[0]->LOCAL_MARK]->ID;
-            indices[faceIndex++] = Results[face->Vertices[1]->LOCAL_MARK]->ID;
-            indices[faceIndex++] = Results[face->Vertices[2]->LOCAL_MARK]->ID;
+            indices[faceIndex++] = Vertices[face->Vertices[0]->LOCAL_MARK]->ID;
+            indices[faceIndex++] = Vertices[face->Vertices[1]->LOCAL_MARK]->ID;
+            indices[faceIndex++] = Vertices[face->Vertices[2]->LOCAL_MARK]->ID;
         }
     }
 
-    bool MeshReducerPrivate::isManifoldMesh() const
+    bool MeshReducerPrivate::isNonClosedMesh() const
     {
         return m_bStrictConstraint;
     }
@@ -1457,8 +1493,7 @@ namespace
             // get top element
             Edge &top = *heap.top();
 
-            if (top.Start->Removed || top.End->Removed ||
-                top.LOCAL_MARK < top.Start->LOCAL_MARK || top.LOCAL_MARK < top.End->LOCAL_MARK)
+            if (top.Start->Removed || top.End->Removed)
             {
                 continue;
             }
@@ -1477,9 +1512,6 @@ namespace
 
     void MeshReducerPrivate::cleanUp()
     {
-        Results.clear();
-        NumOfValidFace = 0;
-
         int nValidVert = 0;
         for (auto &vert : Vertices)
         {
@@ -1487,58 +1519,51 @@ namespace
             {
                 continue;
             }
-            nValidVert++;
+
+            Vertices[nValidVert++] = vert;
         }
 
-        // return if no valid vertex
         if (nValidVert == 0)
         {
+            Vertices.clear();
+            Faces.clear();
             return;
         }
 
-        Results.resize(nValidVert);
-        unsigned int i_valid = 0;
-        for (auto &vert : Vertices)
-        {
-            if (vert->Removed)
-            {
-                continue;
-            }
-            Results[i_valid++] = vert;
-        }
-
-        DuplicateVertexCmp cmp;
-        std::sort(Results.begin(), Results.end(), cmp);
+        Vertices.resize(nValidVert);
+        std::sort(Vertices.begin(), Vertices.end(), Vertex::comparefunc);
 
         // remove duplicated vertex
         unsigned int j = 0;
         unsigned int i = 1;
         unsigned int nDeleted = 0;
-        for (; i != i_valid;)
+        for (; i != nValidVert;)
         {
-            Results[i]->Removed = true;
-            if (Results[i]->Pos == Results[j]->Pos)
+            Vertices[i]->Removed = true;
+            if (Vertices[i]->Pos == Vertices[j]->Pos)
             {
-                Results[i]->LOCAL_MARK = j;
+                Vertices[i]->LOCAL_MARK = j;
                 i++;
                 nDeleted++;
             }
             else
             {
-                Results[i]->LOCAL_MARK = i;
+                Vertices[i]->LOCAL_MARK = i;
                 j = i;
                 ++i;
             }
         }
 
-        Results[0]->LOCAL_MARK = 0;
-        Results[0]->Removed = true;
+        Vertices[0]->LOCAL_MARK = 0;
+        Vertices[0]->Removed = true;
 
         // remove face out of range area
         // if share same vertex id, means face invalid
+        unsigned int validFaceNum = 0;
+        unsigned int faceCount = Faces.size();
         for (auto &face : Faces)
         {
-            if (face->Valid == false)
+            if (!face->Valid)
             {
                 continue;
             }
@@ -1551,28 +1576,33 @@ namespace
                 face->Valid = false;
                 continue;
             }
-            NumOfValidFace++;
-            Results[v0->LOCAL_MARK]->Removed = false;
-            Results[v1->LOCAL_MARK]->Removed = false;
-            Results[v2->LOCAL_MARK]->Removed = false;
+            Faces[validFaceNum++] = face;
+            Vertices[v0->LOCAL_MARK]->Removed = false;
+            Vertices[v1->LOCAL_MARK]->Removed = false;
+            Vertices[v2->LOCAL_MARK]->Removed = false;
         }
+        Faces.resize(validFaceNum);
     }
 
     bool MeshReducerPrivate::isValid() const
     {
+        if (Vertices.empty())
+        {
+            return false;
+        }
 
         Vec3 min(std::numeric_limits<double>::max());
         Vec3 max(std::numeric_limits<double>::min());
+
+        min.X = Vertices[0]->Pos.X;
+        max.X = Vertices.back()->Pos.X;
+
         for (auto vert : Vertices)
         {
             if (vert->Removed)
             {
                 continue;
             }
-
-            // get scale
-            min.X = std::min(min.X, vert->Pos.X);
-            max.X = std::max(max.X, vert->Pos.X);
 
             min.Y = std::min(min.Y, vert->Pos.Y);
             max.Y = std::max(max.Y, vert->Pos.Y);
@@ -1606,7 +1636,7 @@ namespace common
         reducer.load(vertices, indices, nVert, nIdx);
         reducer.reduce(nTarget);
         bool bValid = reducer.isValid();
-        if (!bValid && !reducer.isManifoldMesh())
+        if (!bValid && !reducer.isNonClosedMesh())
         {
             // do again if the result is invalid and the mesh is non-manifold
             // force to go through the strict route
@@ -1615,11 +1645,16 @@ namespace common
             reducer.reduce(nTarget, true);
             bValid = reducer.isValid();
         }
+<<<<<<< HEAD
         // if invalid, don't store
         if (bValid)
         {
             reducer.store(reducedVertices, reducedIndices);
         }
+=======
+
+        reducer.store(reducedVertices, reducedIndices);
+>>>>>>> regression
         return bValid;
     }
 } // namespace common
